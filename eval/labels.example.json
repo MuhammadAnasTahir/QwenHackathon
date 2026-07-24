@@ -1,0 +1,36 @@
+[
+  {
+    "image": "rx1.jpg",
+    "medicines": [
+      {
+        "brand_name": "Augmentin 625mg",
+        "quantity": "one_tablet",
+        "frequency": "twice_daily",
+        "food": "after_food",
+        "duration_days": 5,
+        "times": ["08:00", "20:00"]
+      },
+      {
+        "brand_name": "Panadol",
+        "quantity": "one_tablet",
+        "frequency": "thrice_daily",
+        "food": "any",
+        "duration_days": null,
+        "times": ["08:00", "14:00", "20:00"]
+      }
+    ]
+  },
+  {
+    "image": "rx2.png",
+    "medicines": [
+      {
+        "brand_name": "Flagyl 400",
+        "quantity": "one_tablet",
+        "frequency": "at_bedtime",
+        "food": "after_food",
+        "duration_days": 7,
+        "times": ["21:00"]
+      }
+    ]
+  }
+]

@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafaf9; /* warm white (stone-50) */
+  --foreground: #1c1917; /* stone-900 */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  /* Inter for Latin; Urdu glyphs automatically fall back to Noto Nastaliq */
+  font-family: var(--font-sans), var(--font-urdu), ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Nastaliq needs a very generous line-height or ascenders/descenders clip */
+.font-urdu {
+  font-family: var(--font-urdu), "Noto Nastaliq Urdu", serif;
+  line-height: 2.2;
+}
+
+/* Older eyes, cracked screens: bump the base size on phones */
+@media (max-width: 640px) {
+  html {
+    font-size: 17px;
+  }
+}
+
+/* Big tappable things should never select text or flash blue */
+button,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+button,
+a,
+[role="button"],
+input,
+label {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type="time"] {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: #a7f3d0; /* emerald-200 */
+}
+
+/* Gentle entrance used on the home screen */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
