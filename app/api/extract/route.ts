@@ -115,7 +115,7 @@ export async function POST(req: Request) {
     const settled = await Promise.allSettled(
       Array.from({ length: runs }, (_, i) =>
         timed(
-          `extraction run ${i + 1}/${runs}${ocrText ? " (with OCR)" : ""}`,
+          `extraction run ${i + 1}/${runs}`,
           VISION_MODEL,
           async (): Promise<ExtractionResult> => {
             const completion = await qwen.chat.completions.create({

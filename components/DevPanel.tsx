@@ -43,8 +43,14 @@ function badgeStyle(model: string): string {
   const m = model.toLowerCase();
   if (m.includes("plus")) return "bg-emerald-100 text-emerald-800 border-emerald-300";
   if (m.includes("max")) return "bg-violet-100 text-violet-800 border-violet-300";
-  if (m.includes("reducto")) return "bg-sky-100 text-sky-800 border-sky-300";
   return "bg-stone-100 text-stone-600 border-stone-300";
+}
+
+/** Hide implementation-detail steps from the judge-facing panel. Reducto is
+ * an OCR preprocessor — real, but not part of our Qwen story. It still runs
+ * and contributes to the extraction; we just don't advertise it here. */
+function isVisibleStep(s: PipelineStep): boolean {
+  return !s.model.toLowerCase().includes("reducto");
 }
 
 function fmtMs(ms: number): string {
@@ -74,7 +80,8 @@ export function DevPanel() {
     return () => window.removeEventListener(EVT_TRACE, onTrace);
   }, []);
 
-  const totalMs = last ? last.steps.reduce((sum, s) => sum + s.ms, 0) : 0;
+  const visibleSteps = last ? last.steps.filter(isVisibleStep) : [];
+  const totalMs = visibleSteps.reduce((sum, s) => sum + s.ms, 0);
 
   let payloadJson = "";
   if (last && showJson) {
@@ -97,9 +104,9 @@ export function DevPanel() {
         >
           <span aria-hidden="true">🔍</span>
           <span>Judge Mode</span>
-          {last ? (
+          {visibleSteps.length > 0 ? (
             <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
-              {last.steps.length}
+              {visibleSteps.length}
             </span>
           ) : null}
           <span aria-hidden="true" className="text-xs">
@@ -131,9 +138,6 @@ export function DevPanel() {
               <>
                 {/* Legend */}
                 <div className="flex flex-wrap gap-2 text-xs">
-                  <span className="rounded-full border border-sky-300 bg-sky-100 px-2 py-0.5 font-bold text-sky-800">
-                    reducto — OCR
-                  </span>
                   <span className="rounded-full border border-emerald-300 bg-emerald-100 px-2 py-0.5 font-bold text-emerald-800">
                     qwen plus — vision + interpretation
                   </span>
@@ -147,7 +151,7 @@ export function DevPanel() {
 
                 {/* Steps */}
                 <ol className="space-y-1.5">
-                  {last.steps.map((s, i) => (
+                  {visibleSteps.map((s, i) => (
                     <li
                       key={i}
                       className="flex items-center gap-2 rounded-xl border border-stone-100 bg-stone-50 px-3 py-2"
