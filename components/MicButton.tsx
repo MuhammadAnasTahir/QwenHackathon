@@ -67,6 +67,7 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
   const isDisabled = disabled || !supported;
 
   return (
+<<<<<<< HEAD
     <div className="relative inline-flex shrink-0">
       <button
         type="button"
@@ -98,6 +99,27 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
         >
           {errorMsg}
         </div>
+=======
+    <button
+      type="button"
+      onClick={() => void tap()}
+      disabled={isDisabled}
+      aria-label={listening ? t("chat_listening") : t("chat_tap_mic")}
+      aria-pressed={listening}
+      className={`relative flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-full text-3xl transition-colors touch-manipulation ${
+        listening
+          ? "animate-pulse bg-red-500 ring-4 ring-red-300"
+          : "bg-transparent border border-emerald-200 active:bg-stone-100"
+      } ${isDisabled ? "cursor-not-allowed opacity-40" : ""}`}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/mic.avif" alt="" className="h-10 w-10 object-contain mix-blend-multiply" />
+      {listening ? (
+        <span
+          aria-hidden="true"
+          className="absolute -top-1 -end-1 h-4 w-4 rounded-full bg-red-600 ring-2 ring-white"
+        />
+>>>>>>> pr-1
       ) : null}
     </div>
   );

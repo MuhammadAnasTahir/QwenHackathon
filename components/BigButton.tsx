@@ -17,9 +17,9 @@ export function BigButton({ icon, label, sub, onClick, className }: BigButtonPro
     <button
       type="button"
       onClick={onClick}
-      className={`flex min-h-40 w-full select-none flex-col items-center justify-center gap-3 rounded-3xl border-2 border-emerald-100 bg-white p-6 text-stone-800 shadow-lg shadow-emerald-900/5 transition-transform duration-100 active:scale-[0.97] active:border-emerald-400 ${className ?? ""}`}
+      className={`flex min-h-28 w-full select-none flex-col items-center justify-center gap-2 rounded-3xl border-2 border-emerald-100 bg-white p-4 text-stone-800 shadow-lg shadow-emerald-900/5 transition-transform duration-100 active:scale-[0.97] active:border-emerald-400 ${className ?? ""}`}
     >
-      <span aria-hidden="true" className="text-6xl leading-none">
+      <span aria-hidden="true" className="text-4xl leading-none">
         {icon}
       </span>
       <span
