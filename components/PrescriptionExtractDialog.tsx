@@ -42,6 +42,7 @@ export function PrescriptionExtractDialog({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the wizard's steps each time this dialog reopens
       setStage("picker");
       setPhoto(null);
       setData(null);

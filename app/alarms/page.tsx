@@ -116,6 +116,7 @@ export default function AlarmsPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load-on-mount from localStorage/IndexedDB, not derivable during render
     refresh();
   }, [refresh]);
 

@@ -42,6 +42,7 @@ export function CaptureOrUpload({
 
   // Reset the "no camera" hint every time the dialog reopens.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient hint each time this dialog reopens
     if (open) setNoCamera(false);
   }, [open]);
 

@@ -39,7 +39,9 @@ function demoAlarm(hhmm: string): Alarm {
 export function AlarmScheduler() {
   const [ringing, setRinging] = useState<Ringing | null>(null);
   const ringingRef = useRef<Ringing | null>(null);
-  ringingRef.current = ringing;
+  useEffect(() => {
+    ringingRef.current = ringing;
+  }, [ringing]);
   const snoozeTimer = useRef<number | null>(null);
   const testTimer = useRef<number | null>(null);
 

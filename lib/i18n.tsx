@@ -33,6 +33,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(LS_LANG);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- stored preference is only known client-side; keeps SSR/first-paint markup matching the default
       if (stored === "ur" || stored === "en") setLangState(stored);
     } catch {
       // localStorage unavailable (private mode) — keep the default.

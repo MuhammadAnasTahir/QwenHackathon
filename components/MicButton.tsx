@@ -17,6 +17,7 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
   const listeningRef = useRef(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SpeechRecognition support is only known client-side; avoids SSR hydration mismatch
     setSupported(sttSupported());
     return () => {
       // Release the microphone if we unmount mid-listen.
