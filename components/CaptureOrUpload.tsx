@@ -60,10 +60,14 @@ export function CaptureOrUpload({
     uploadRef.current?.click();
   };
 
-  const emitAndClose = (f: File | undefined | null) => {
+  // Hand the file to the consumer and let IT decide what happens next. We do
+  // NOT call onClose() here: when this picker is the first step of a larger
+  // flow (PrescriptionExtractDialog), onClose unmounts the whole flow, so
+  // auto-closing on select would kill the extraction before it renders.
+  // Consumers that want the picker dismissed close it in their onFile handler.
+  const emitFile = (f: File | undefined | null) => {
     if (!f) return;
     onFile(f);
-    onClose();
   };
 
   return (
@@ -87,7 +91,7 @@ export function CaptureOrUpload({
           onChange={(e) => {
             const f = e.target.files?.[0];
             e.target.value = "";
-            emitAndClose(f);
+            emitFile(f);
           }}
         />
         <input
@@ -98,7 +102,7 @@ export function CaptureOrUpload({
           onChange={(e) => {
             const f = e.target.files?.[0];
             e.target.value = "";
-            emitAndClose(f);
+            emitFile(f);
           }}
         />
 

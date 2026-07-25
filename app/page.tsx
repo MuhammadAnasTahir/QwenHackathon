@@ -51,7 +51,7 @@ export default function Home() {
   const confirmTarget = confirmId ? alarms.find((a) => a.id === confirmId) ?? null : null;
 
   return (
-    <main className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-y-auto overflow-x-hidden px-5 pb-4 pt-3">
+    <main className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col overflow-x-hidden px-5 pb-4 pt-3">
       {/* Top pill bar */}
       <header className="relative z-10 flex items-center justify-between rounded-full bg-white/80 px-3 py-2 shadow-sm border border-stone-200 backdrop-blur animate-fade-up">
         <div className="flex items-center gap-3">

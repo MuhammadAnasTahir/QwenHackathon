@@ -212,7 +212,8 @@ export default function ChatPage() {
           "kind" in m &&
           ((m as Msg).kind === "chat" ||
             (m as Msg).kind === "alarms_link" ||
-            (m as Msg).kind === "voice"),
+            (m as Msg).kind === "voice" ||
+            (m as Msg).kind === "alarm_offer"),
       );
       if (restored.length > 0) setMessages(restored);
     } catch {
@@ -226,7 +227,16 @@ export default function ChatPage() {
     if (typeof window === "undefined") return;
     try {
       const serializable = messages
-        .filter((m) => m.kind === "chat" || m.kind === "alarms_link" || m.kind === "voice")
+        .filter(
+          (m) =>
+            m.kind === "chat" ||
+            m.kind === "alarms_link" ||
+            m.kind === "voice" ||
+            // Keep only RESOLVED offer cards (the "Yes → added" result). A
+            // still-pending offer isn't persisted — its Yes button needs the
+            // image, which we strip, so restoring a pending one would break it.
+            (m.kind === "alarm_offer" && (m.status === "done" || m.status === "empty")),
+        )
         .map((m) => {
           if (m.kind === "chat") {
             // Drop the image data URL — too big for sessionStorage quota.
@@ -236,6 +246,10 @@ export default function ChatPage() {
             // Blob object URLs don't survive navigation, and autoPlay must not
             // re-fire on restore — strip both. `text` stays for history context.
             return { ...m, audioUrl: null, autoPlay: false };
+          }
+          if (m.kind === "alarm_offer") {
+            // Strip the heavy image data URL; the resolved card doesn't need it.
+            return { ...m, image: "" };
           }
           return m;
         });
@@ -698,11 +712,23 @@ export default function ChatPage() {
                       </span>
                     </div>
                   ) : offer.status === "done" ? (
-                    <p className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
-                      ✅ {ur
-                        ? `${offer.count ?? 0} الارم بن گئے`
-                        : `${offer.count ?? 0} alarm${(offer.count ?? 0) === 1 ? "" : "s"} added`}
-                    </p>
+                    <div className="space-y-2">
+                      <p className={`text-base font-semibold text-emerald-900/80 ${urduFont}`} dir="auto">
+                        ⏰ {ur
+                          ? "کیا میں ان دواؤں کے الارم بنا دوں؟"
+                          : "Do you want me to add these medicines to your alarms?"}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full bg-emerald-600 px-3 py-1 text-sm font-extrabold text-white ${urduFont}`}>
+                          {ur ? "ہاں" : "Yes"}
+                        </span>
+                        <span className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
+                          ✅ {ur
+                            ? `${offer.count ?? 0} الارم بن گئے`
+                            : `${offer.count ?? 0} alarm${(offer.count ?? 0) === 1 ? "" : "s"} added`}
+                        </span>
+                      </div>
+                    </div>
                   ) : (
                     <p className={`text-base font-bold text-stone-600 ${urduFont}`} dir="auto">
                       {ur
@@ -848,11 +874,15 @@ export default function ChatPage() {
         </form>
       </footer>
 
-      {/* Shared capture-or-upload picker */}
+      {/* Shared capture-or-upload picker. Close it ourselves once a file is
+          picked (CaptureOrUpload no longer auto-closes on select). */}
       <CaptureOrUpload
         open={showPicker}
         onClose={() => setShowPicker(false)}
-        onFile={(f) => void onFile(f)}
+        onFile={(f) => {
+          setShowPicker(false);
+          void onFile(f);
+        }}
       />
     </div>
   );
