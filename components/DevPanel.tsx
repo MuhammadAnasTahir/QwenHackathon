@@ -94,14 +94,16 @@ export function DevPanel() {
 
   return (
     <div dir="ltr" className="fixed inset-x-0 bottom-20 z-40 select-none pointer-events-none">
-      {/* Drawer handle */}
-      <div className="flex justify-end px-3 pb-2 pointer-events-auto">
+      {/* Drawer handle. The wrapper stays pointer-events-none so it never
+          steals clicks from buttons behind it; only the small round button
+          re-enables pointer events. */}
+      <div className="flex justify-end px-3 pb-2 pointer-events-none">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-label="Judge Mode"
-          className="relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-xl font-bold text-stone-700 shadow-lg backdrop-blur transition-colors active:bg-stone-100"
+          className="pointer-events-auto relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-xl font-bold text-stone-700 shadow-lg backdrop-blur transition-colors active:bg-stone-100"
         >
           <span aria-hidden="true">🔍</span>
 

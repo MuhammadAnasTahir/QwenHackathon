@@ -720,7 +720,7 @@ export default function ChatPage() {
               href="/"
               className={`flex min-h-16 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-xl font-extrabold text-white shadow-md transition-transform active:scale-[0.98] ${urduFont}`}
             >
-              ⏰ {ur ? "الارم دیکھیں" : "See my alarms"}
+              {ur ? "الارم دیکھیں" : "See my alarms"}
             </Link>
           );
         })}
