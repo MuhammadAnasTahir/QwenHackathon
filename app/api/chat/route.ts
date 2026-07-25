@@ -35,6 +35,7 @@ export async function POST(req: Request) {
     messages?: unknown;
     images?: unknown;
     language?: unknown;
+    romanReply?: unknown;
   };
 
   const history: ChatMsg[] = Array.isArray(body.messages)
@@ -44,6 +45,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "messages_required" }, { status: 400 });
   }
   const lang: Lang = body.language === "en" ? "en" : "ur";
+  const romanReply = body.romanReply === true && lang === "ur";
   const images: string[] = Array.isArray(body.images)
     ? body.images
         .filter((s): s is string => typeof s === "string" && s.startsWith("data:"))
@@ -58,7 +60,9 @@ export async function POST(req: Request) {
     }
   }
 
-  const oaMessages: OAMessage[] = [{ role: "system", content: CHAT_SYSTEM(lang) }];
+  const oaMessages: OAMessage[] = [
+    { role: "system", content: CHAT_SYSTEM(lang, romanReply) },
+  ];
   history.forEach((m, i) => {
     if (m.role === "user" && i === lastUserIdx && images.length > 0) {
       const parts: ContentPart[] = [];

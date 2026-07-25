@@ -677,3 +677,20 @@ export async function hasVoiceFor(lang: Lang): Promise<boolean> {
   const prefix = lang === "ur" ? "ur" : "en";
   return voices.some((v) => v.lang.toLowerCase().startsWith(prefix));
 }
+
+/**
+ * Whether this device can speak Urdu SCRIPT with a native-ish voice — i.e. it
+ * has a Urdu, Arabic, or Persian voice (all read the Arabic script). Phones
+ * usually return true; Windows laptops usually return false.
+ *
+ * The chat flow calls this BEFORE sending a voice message: when it's false, we
+ * ask Qwen to reply in Roman Urdu so it can be spoken with the English voice
+ * (which every device has) — no transliteration round-trip, no silent audio.
+ */
+export async function hasUrduCapableVoice(): Promise<boolean> {
+  const voices = await getVoices();
+  return voices.some((v) => {
+    const l = v.lang.toLowerCase();
+    return l.startsWith("ur") || l.startsWith("ar") || l.startsWith("fa");
+  });
+}

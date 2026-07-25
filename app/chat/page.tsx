@@ -14,7 +14,7 @@ import {
   type VerifyResult,
 } from "@/lib/schema";
 import { useLang } from "@/lib/i18n";
-import { initAudio, speak, stopSpeaking } from "@/lib/speech";
+import { hasUrduCapableVoice, initAudio, speak, stopSpeaking } from "@/lib/speech";
 import { loadAlarms, saveAlarm } from "@/lib/alarms";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
 import { streamJson } from "@/lib/streamClient";
@@ -94,8 +94,23 @@ export default function ChatPage() {
   const [speaking, setSpeaking] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
+  // Whether this device can speak Urdu script natively (phone: usually yes;
+  // Windows laptop: usually no). Determined once on mount. When false, Urdu
+  // voice replies are requested in Roman Urdu and spoken with an English voice.
+  const urduVoiceRef = useRef<boolean>(true);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void hasUrduCapableVoice().then((has) => {
+      if (!cancelled) urduVoiceRef.current = has;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -181,11 +196,15 @@ export default function ChatPage() {
    * Speak the assistant's reply — but only when the user asked by voice.
    * Rationale: if you can type, you can read; the play-on-every-message UX
    * is noise. Voice reply is opt-in via the mic (a "voice message").
+   *
+   * `speakLang` may differ from the UI language: on a device with no Urdu
+   * voice we reply in Roman Urdu and speak it as "en" (English voice reading
+   * phonetic Urdu), which is intelligible and works everywhere.
    */
-  const sayReply = (text: string, viaVoice: boolean) => {
+  const sayReply = (text: string, viaVoice: boolean, speakLang: typeof lang = lang) => {
     if (!viaVoice) return;
     setSpeaking(true);
-    void speak(text, lang)
+    void speak(text, speakLang)
       .catch(() => {})
       .finally(() => setSpeaking(false));
   };
@@ -201,7 +220,9 @@ export default function ChatPage() {
         ? t("error_offline")
         : t("error_generic");
     append({ id: nextId(), kind: "chat", role: "assistant", text });
-    sayReply(text, viaVoice);
+    // Error strings are UI-language Urdu script; speak() transliterates them
+    // on devices without an Urdu voice.
+    sayReply(text, viaVoice, lang);
   };
 
   // Build the model conversation history from the transcript, including BOTH
@@ -263,6 +284,12 @@ export default function ChatPage() {
 
     const history = buildHistory([{ role: "user", content }]);
 
+    // Roman-Urdu path: only for voice messages, only in Urdu, only when the
+    // device has no Urdu-capable voice. Keeps proper Urdu script for phones
+    // and for typed messages.
+    const useRoman = viaVoice && ur && !urduVoiceRef.current;
+    const replySpeakLang: typeof lang = useRoman ? "en" : lang;
+
     const replyId = nextId();
     append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
     setInput("");
@@ -274,6 +301,7 @@ export default function ChatPage() {
       messages: history,
       images: img ? [img.full] : undefined,
       language: lang,
+      romanReply: useRoman,
     };
 
     // Closure-mutated holders (TS won't narrow bare `let`s across an await).
@@ -312,8 +340,9 @@ export default function ChatPage() {
     const done = chatHolder.value;
     dispatchTrace(done.trace, done);
     setRedFlag(done.red_flag);
-    // Only speak the reply when the user asked by voice.
-    sayReply(done.reply, viaVoice);
+    // Only speak the reply when the user asked by voice. On no-Urdu-voice
+    // devices the reply is Roman Urdu, spoken with the English voice.
+    sayReply(done.reply, viaVoice, replySpeakLang);
   };
 
   // ── Voice message: voice in → voice out (no visible text) ─────────────────
