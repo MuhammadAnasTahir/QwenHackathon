@@ -26,6 +26,7 @@ function demoAlarm(hhmm: string): Alarm {
     salt: "paracetamol",
     photoKey: null,
     urdu_announcement: "دوا کا وقت ہو گیا ہے۔ پیناڈول کی ایک گولی کھانے کے بعد لیں۔",
+    roman_urdu_announcement: "Aap ka Panadol 500mg khane ka waqt ho gaya hai. Ek goli, khane ke baad lein.",
     english_announcement: "It is time for your medicine. Take one tablet of Panadol after food.",
     times: [hhmm],
     start_date: todayStr(now),

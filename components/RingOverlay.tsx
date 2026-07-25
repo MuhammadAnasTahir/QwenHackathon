@@ -21,18 +21,23 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
   useEffect(() => {
     initAudio();
 
-    // Pick the announcement that matches the current UI language. Falls back
-    // to the other language only if the desired one is missing.
+    // Pick what to speak for the current UI language. For Urdu we speak the
+    // Roman Urdu text (e.g. "Aap ka Panadol khane ka waqt ho gaya hai")
+    // through an English voice: most devices ship a working en voice but no
+    // ur-PK one, and an English TTS engine reading phonetic Roman Urdu comes
+    // out understandable, where it reading Nastaliq Urdu script does not.
+    // Alarms saved before this field existed fall back to the Urdu script.
+    const useRoman = lang === "ur" && !!alarm.roman_urdu_announcement;
     const spokenLang: "ur" | "en" =
       lang === "en" && alarm.english_announcement
         ? "en"
-        : alarm.urdu_announcement
-          ? "ur"
-          : "en";
+        : useRoman || !alarm.urdu_announcement
+          ? "en"
+          : "ur";
     const announcement =
-      spokenLang === "en"
+      lang === "en"
         ? alarm.english_announcement || alarm.urdu_announcement
-        : alarm.urdu_announcement || alarm.english_announcement;
+        : (alarm.roman_urdu_announcement ?? alarm.urdu_announcement ?? alarm.english_announcement);
     const announce = () => {
       speak(announcement, spokenLang).catch(() => {});
     };
@@ -70,7 +75,7 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
         }
       }
     };
-  }, [alarm.id, alarm.urdu_announcement, alarm.english_announcement, time, lang]);
+  }, [alarm.id, alarm.urdu_announcement, alarm.roman_urdu_announcement, alarm.english_announcement, time, lang]);
 
   const silenceAnd = (fn: () => void) => () => {
     stopBeeps();

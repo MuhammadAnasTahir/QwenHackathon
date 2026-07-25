@@ -261,6 +261,32 @@ const FOOD_EN: Record<FoodTiming, string> = {
   unknown: "",
 };
 
+// Roman Urdu (Urdu spelled in Latin letters). Spoken via an English TTS
+// voice — most devices ship a working en voice but no ur-PK one, and an
+// English engine reading phonetic Roman Urdu comes out understandable,
+// where the same engine reading Nastaliq Urdu script does not.
+const QTY_ROMAN: Record<Quantity, string> = {
+  half_tablet: "Aadhi goli",
+  one_tablet: "Ek goli",
+  two_tablets: "Do goliyan",
+  one_spoon: "Ek chamach",
+  half_spoon: "Aadha chamach",
+  drops: "Qatre",
+  injection: "Injection",
+  puff: "Ek puff",
+  sachet: "Ek sachet",
+  unknown: "",
+};
+
+const FOOD_ROMAN: Record<FoodTiming, string> = {
+  before_food: "khane se pehle",
+  after_food: "khane ke baad",
+  empty_stomach: "khali pait",
+  with_milk: "doodh ke sath",
+  any: "",
+  unknown: "",
+};
+
 /**
  * Compose the spoken Urdu announcement. Medicine name is kept in Latin script
  * on purpose — drug names are English (Panadol, Augmentin, Brufen) and TTS
@@ -293,8 +319,31 @@ export function composeEnglishAnnouncement(
   return `It is time for your medicine. Please take ${dose}${suffix}.`;
 }
 
+/**
+ * Roman Urdu version of the announcement, e.g. "Aap ka Panadol khane ka
+ * waqt ho gaya hai. Ek goli, khane ke baad lein." Used for the alarm's
+ * spoken audio (see RingOverlay) — never displayed, since the on-screen
+ * text stays in Nastaliq Urdu script.
+ */
+export function composeRomanUrduAnnouncement(
+  brandName: string,
+  quantity: Quantity,
+  food: FoodTiming,
+): string {
+  const qty = QTY_ROMAN[quantity] ?? "";
+  const foodPhrase = FOOD_ROMAN[food] ?? "";
+  const parts: string[] = [`Aap ka ${brandName} khane ka waqt ho gaya hai.`];
+  const detail = [qty, foodPhrase].filter(Boolean).join(", ");
+  if (detail) parts.push(`${detail} lein.`);
+  return parts.join(" ");
+}
+
 function urduAnnouncement(med: ExtractedMedicine): string {
   return composeUrduAnnouncement(med.brand_name, med.quantity, med.food);
+}
+
+function romanUrduAnnouncement(med: ExtractedMedicine): string {
+  return composeRomanUrduAnnouncement(med.brand_name, med.quantity, med.food);
 }
 
 function englishAnnouncement(med: ExtractedMedicine): string {
@@ -361,6 +410,7 @@ export async function buildAlarmsFromExtraction(
       salt: med.salt,
       photoKey,
       urdu_announcement: urduAnnouncement(med),
+      roman_urdu_announcement: romanUrduAnnouncement(med),
       english_announcement: englishAnnouncement(med),
       times,
       start_date: today,

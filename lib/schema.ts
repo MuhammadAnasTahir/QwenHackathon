@@ -157,7 +157,8 @@ export interface Alarm {
   medicine_name: string;
   salt: string | null;
   photoKey: string | null; // IndexedDB key for the box photo (data URL value)
-  urdu_announcement: string; // spoken when ringing, e.g. "آگمنٹن کی ایک گولی، کھانے کے بعد"
+  urdu_announcement: string; // shown when ringing, e.g. "آگمنٹن کی ایک گولی، کھانے کے بعد"
+  roman_urdu_announcement?: string; // spoken for "ur" alarms via an en voice, e.g. "Aap ka Panadol khane ka waqt ho gaya hai" — optional for alarms saved before this field existed
   english_announcement: string;
   times: string[]; // "HH:MM" 24h
   start_date: string; // "YYYY-MM-DD"

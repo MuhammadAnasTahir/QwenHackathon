@@ -12,6 +12,7 @@ import type { TKey } from "@/lib/translations";
 import { useLang } from "@/lib/i18n";
 import {
   composeEnglishAnnouncement,
+  composeRomanUrduAnnouncement,
   composeUrduAnnouncement,
   deleteAlarm,
   loadAlarms,
@@ -144,6 +145,7 @@ export default function AlarmsPage() {
       salt: "paracetamol",
       photoKey: null,
       urdu_announcement: composeUrduAnnouncement(brand, quantity, food),
+      roman_urdu_announcement: composeRomanUrduAnnouncement(brand, quantity, food),
       english_announcement: composeEnglishAnnouncement(brand, quantity, food),
       times: [time],
       start_date: todayStr(),
@@ -414,6 +416,7 @@ function AddAlarmDialog({ onClose, onSaved }: { onClose(): void; onSaved(): void
         salt: null,
         photoKey,
         urdu_announcement: composeUrduAnnouncement(trimmed, quantity, food),
+        roman_urdu_announcement: composeRomanUrduAnnouncement(trimmed, quantity, food),
         english_announcement: composeEnglishAnnouncement(trimmed, quantity, food),
         times: [...times],
         start_date: todayStr(),

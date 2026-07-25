@@ -58,6 +58,8 @@ export type TKey =
   | "expired_warning"
   | "error_generic"
   | "error_offline"
+  | "error_mic_denied"
+  | "error_no_speech"
   | "speak_screen"
   | "language_toggle"
   | "extract_review_title"
@@ -143,6 +145,11 @@ export const translations: Record<TKey, { ur: string; en: string }> = {
 
   error_generic: { ur: "معاف کیجیے، کچھ خرابی ہو گئی۔ دوبارہ کوشش کریں۔", en: "Sorry, something went wrong. Please try again." },
   error_offline: { ur: "انٹرنیٹ نہیں چل رہا۔ تھوڑی دیر بعد کوشش کریں۔", en: "No internet. Please try again in a while." },
+  error_mic_denied: {
+    ur: "مائیک کی اجازت نہیں ملی۔ براہ کرم اجازت دیں۔",
+    en: "Microphone permission was denied. Please allow microphone access.",
+  },
+  error_no_speech: { ur: "کچھ سنائی نہیں دیا۔ دوبارہ کوشش کریں۔", en: "We didn't catch that. Please try again." },
 
   speak_screen: { ur: "سنیں", en: "Listen" },
   language_toggle: { ur: "زبان بدلیں", en: "Change language" },

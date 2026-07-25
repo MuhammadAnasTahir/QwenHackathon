@@ -59,12 +59,43 @@ export function sttSupported(): boolean {
   return getRecognitionCtor() !== null;
 }
 
+// Generous grace period to start speaking after the mic opens (cold mic +
+// slow phones need this), then a tighter cutoff once the user is heard —
+// so a single tap doesn't die from Chrome's own aggressive default cutoff.
+const INITIAL_GRACE_MS = 6000;
+const TRAILING_SILENCE_MS = 1800;
+const MAX_DURATION_MS = 20000;
+
+/**
+ * Explicitly prompt for (or confirm) microphone access before starting
+ * recognition. SpeechRecognition's own built-in permission handling is
+ * flaky on some Android/Chrome builds — probing via getUserMedia first
+ * gives us a clean, early "mic-permission-denied" instead of a silent
+ * failure inside the recognizer.
+ */
+async function ensureMicPermission(): Promise<void> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+  } catch {
+    throw new Error("mic-permission-denied");
+  }
+}
+
 /**
  * Listen once and resolve with the recognised text.
- * Rejects with Error("no-speech") when nothing usable was heard,
- * or with the recognition error name on failure.
+ * Rejects with Error("no-speech") when nothing usable was heard, or with
+ * the recognition error code on failure (see MicButton for how codes map
+ * to user-facing messages).
+ *
+ * ur-PK is not a reliably supported recognition locale on every device —
+ * if it fails immediately (before anything was heard), we silently retry
+ * once in en-US rather than surfacing a dead mic to the user.
  */
-export function listen(lang: Lang, onInterim?: (s: string) => void): Promise<string> {
+export async function listen(lang: Lang, onInterim?: (s: string) => void): Promise<string> {
+  await ensureMicPermission();
+
   return new Promise<string>((resolve, reject) => {
     const Ctor = getRecognitionCtor();
     if (!Ctor) {
@@ -82,53 +113,119 @@ export function listen(lang: Lang, onInterim?: (s: string) => void): Promise<str
       activeRecognition = null;
     }
 
-    const rec = new Ctor();
-    rec.lang = lang === "ur" ? "ur-PK" : "en-US";
-    rec.interimResults = true;
-    rec.continuous = false;
-    rec.maxAlternatives = 1;
+    const fallbackLang = "en-US";
 
-    let finalText = "";
-    let interimText = "";
-    let settled = false;
+    const attempt = (recLang: string, allowFallback: boolean) => {
+      const rec = new Ctor();
+      rec.lang = recLang;
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.maxAlternatives = 1;
 
-    rec.onresult = (e: SREvent) => {
-      interimText = "";
-      for (let i = 0; i < e.results.length; i++) {
-        const result = e.results[i];
-        const alt = result[0];
-        if (!alt) continue;
-        if (result.isFinal) finalText += alt.transcript;
-        else interimText += alt.transcript;
+      let finalText = "";
+      let interimText = "";
+      let settled = false;
+      let heardAnything = false;
+      const startedAt = Date.now();
+
+      let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+      let maxTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearTimers = () => {
+        if (silenceTimer !== null) {
+          clearTimeout(silenceTimer);
+          silenceTimer = null;
+        }
+        if (maxTimer !== null) {
+          clearTimeout(maxTimer);
+          maxTimer = null;
+        }
+      };
+
+      const armSilenceTimer = (ms: number) => {
+        if (silenceTimer !== null) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          try {
+            rec.stop();
+          } catch {
+            // ignore
+          }
+        }, ms);
+      };
+
+      const finishOk = (text: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        activeRecognition = null;
+        resolve(text);
+      };
+
+      const finishErr = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        activeRecognition = null;
+        reject(err);
+      };
+
+      rec.onresult = (e: SREvent) => {
+        heardAnything = true;
+        interimText = "";
+        for (let i = 0; i < e.results.length; i++) {
+          const result = e.results[i];
+          const alt = result[0];
+          if (!alt) continue;
+          if (result.isFinal) finalText += alt.transcript;
+          else interimText += alt.transcript;
+        }
+        const preview = (finalText + interimText).trim();
+        if (preview && onInterim) onInterim(preview);
+        armSilenceTimer(TRAILING_SILENCE_MS);
+      };
+
+      rec.onerror = (e: SRErrorEvent) => {
+        const code = e.error || "speech-error";
+        const fastFail = !heardAnything && Date.now() - startedAt < 1200;
+        const languageIssue = code === "language-not-supported" || code === "network";
+        if (allowFallback && fastFail && languageIssue) {
+          // The requested locale isn't usable on this device — retry once
+          // in en-US instead of leaving the user with a dead mic.
+          clearTimers();
+          try {
+            rec.abort();
+          } catch {
+            // ignore
+          }
+          attempt(fallbackLang, false);
+          return;
+        }
+        finishErr(new Error(code));
+      };
+
+      rec.onend = () => {
+        const text = (finalText || interimText).trim();
+        if (text) finishOk(text);
+        else finishErr(new Error("no-speech"));
+      };
+
+      activeRecognition = rec;
+      try {
+        rec.start();
+        maxTimer = setTimeout(() => {
+          try {
+            rec.stop();
+          } catch {
+            // ignore
+          }
+        }, MAX_DURATION_MS);
+        armSilenceTimer(INITIAL_GRACE_MS);
+      } catch (err) {
+        finishErr(err instanceof Error ? err : new Error("speech-start-failed"));
       }
-      const preview = (finalText + interimText).trim();
-      if (preview && onInterim) onInterim(preview);
     };
 
-    rec.onerror = (e: SRErrorEvent) => {
-      if (settled) return;
-      settled = true;
-      activeRecognition = null;
-      reject(new Error(e.error || "speech-error"));
-    };
-
-    rec.onend = () => {
-      if (settled) return;
-      settled = true;
-      activeRecognition = null;
-      const text = (finalText || interimText).trim();
-      if (text) resolve(text);
-      else reject(new Error("no-speech"));
-    };
-
-    activeRecognition = rec;
-    try {
-      rec.start();
-    } catch (err) {
-      settled = true;
-      activeRecognition = null;
-      reject(err instanceof Error ? err : new Error("speech-start-failed"));
-    }
+    attempt(lang === "ur" ? "ur-PK" : "en-US", lang === "ur");
   });
 }
 
