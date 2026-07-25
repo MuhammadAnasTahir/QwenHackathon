@@ -72,6 +72,55 @@ function nextId(): string {
   return `m${Date.now().toString(36)}-${msgCounter}`;
 }
 
+// ── Instant greeting ──────────────────────────────────────────────────────────
+// A bare "hello" / "salam" gets a fixed, instant intro (no model call). Anything
+// with real content ("hello, I have a fever") is NOT a pure greeting and goes to
+// Qwen as normal.
+
+const GREETING_INTRO = {
+  ur: "السلام علیکم! میں صحت ساتھی ہوں — آپ کا صحت کا دوست۔ میں آپ کی مدد کے لیے حاضر ہوں۔ یاد رکھیں، میں ڈاکٹر نہیں ہوں۔",
+  roman:
+    "Assalam o alaikum! Main Sehat Saathi hoon — aap ka sehat ka dost. Main aap ki madad ke liye hazir hoon. Yaad rakhein, main doctor nahi hoon.",
+  en: "Hello, I am Sehat Saathi — your health companion. How can I help you today? Remember, I am not a doctor.",
+};
+
+function isPureGreeting(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 32) return false; // too long to be just a greeting
+  // Urdu-script greetings.
+  if (/^(السلام|اسلام|سلام|ہیلو|ہائے|آداب)/.test(t)) return true;
+  // Normalise Latin: lowercase, letters + spaces only.
+  const c = t
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!c) return false;
+  const exact = new Set([
+    "hello",
+    "hi",
+    "hey",
+    "helo",
+    "hiya",
+    "hello there",
+    "hi there",
+    "salam",
+    "salaam",
+    "asalam",
+    "assalam",
+    "aoa",
+    "adab",
+    "adaab",
+    "hey there",
+  ]);
+  if (exact.has(c)) return true;
+  // "assalam o alaikum", "salam alaikum", etc.
+  if (/^(assalam|asalam|salam|salaam)\b/.test(c)) return true;
+  // "hello/hi/hey <one short word>" e.g. "hello there".
+  if (/^(hello|hi|hey)\b/.test(c) && c.split(" ").length <= 2) return true;
+  return false;
+}
+
 /** Tell the DevPanel what just happened (trace steps + raw payload). */
 function dispatchTrace(trace: PipelineTrace, payload?: unknown): void {
   if (typeof window === "undefined") return;
@@ -289,6 +338,19 @@ export default function ChatPage() {
     // and for typed messages.
     const useRoman = viaVoice && ur && !urduVoiceRef.current;
     const replySpeakLang: typeof lang = useRoman ? "en" : lang;
+
+    // Instant greeting — deterministic intro, no model latency. Only when the
+    // message is a bare greeting and there's no attached image.
+    if (!img && isPureGreeting(text)) {
+      const shown = ur ? GREETING_INTRO.ur : GREETING_INTRO.en;
+      append(userMsg, { id: nextId(), kind: "chat", role: "assistant", text: shown });
+      setInput("");
+      if (viaVoice) {
+        if (useRoman) sayReply(GREETING_INTRO.roman, true, "en");
+        else sayReply(shown, true, lang);
+      }
+      return;
+    }
 
     const replyId = nextId();
     append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
