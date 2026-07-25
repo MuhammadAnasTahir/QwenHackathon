@@ -21,26 +21,31 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
   useEffect(() => {
     initAudio();
 
-    // Pick what to speak for the current UI language. For Urdu we speak the
-    // Roman Urdu text (e.g. "Aap ka Panadol khane ka waqt ho gaya hai")
-    // through an English voice: most devices ship a working en voice but no
-    // ur-PK one, and an English TTS engine reading phonetic Roman Urdu comes
-    // out understandable, where it reading Nastaliq Urdu script does not.
-    // Alarms saved before this field existed fall back to the Urdu script.
-    const useRoman = lang === "ur" && !!alarm.roman_urdu_announcement;
-    const spokenLang: "ur" | "en" =
-      lang === "en" && alarm.english_announcement
-        ? "en"
-        : useRoman || !alarm.urdu_announcement
-          ? "en"
-          : "ur";
-    const announcement =
-      lang === "en"
-        ? alarm.english_announcement || alarm.urdu_announcement
-        : (alarm.roman_urdu_announcement ?? alarm.urdu_announcement ?? alarm.english_announcement);
+    // Pick what to speak for the current UI language. Google TTS (see
+    // lib/speech.ts `speak`) has a proper Urdu voice, so the real Urdu
+    // script is the primary text — `fallbackText` is only used if Google
+    // TTS is unreachable and speech falls back to the browser engine, where
+    // reading the Roman Urdu transliteration (e.g. "Aap ka Panadol khane ka
+    // waqt ho gaya hai") through an English voice comes out understandable,
+    // where the same engine reading Nastaliq Urdu script does not.
+    let spokenLang: "ur" | "en";
+    let announcement: string;
+    let fallbackText: string | undefined;
+    if (lang === "en" && alarm.english_announcement) {
+      spokenLang = "en";
+      announcement = alarm.english_announcement;
+    } else if (alarm.urdu_announcement) {
+      spokenLang = "ur";
+      announcement = alarm.urdu_announcement;
+      fallbackText = alarm.roman_urdu_announcement;
+    } else {
+      spokenLang = "en";
+      announcement = alarm.english_announcement || alarm.urdu_announcement;
+    }
     const announce = () => {
-      speak(announcement, spokenLang).catch(() => {});
+      speak(announcement, spokenLang, fallbackText).catch(() => {});
     };
+
     const vibrate = () => {
       if (typeof navigator !== "undefined" && "vibrate" in navigator) {
         try {
@@ -51,20 +56,33 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
       }
     };
 
-    // Ring immediately, then keep ringing until dismissed.
+    // Beep once as an attention cue (it self-stops after ~4.5s — see
+    // beepPattern), then keep nudging with vibration until dismissed, and
+    // speak the announcement up to MAX_ANNOUNCEMENTS times (then the voice
+    // stops — vibration/visuals keep going until Taken/Snooze is tapped).
+    const MAX_ANNOUNCEMENTS = 4;
+    let announceCount = 0;
+    let speakLoop: number | null = null;
+    const doAnnounce = () => {
+      if (announceCount >= MAX_ANNOUNCEMENTS) return;
+      announceCount++;
+      announce();
+      if (announceCount >= MAX_ANNOUNCEMENTS && speakLoop !== null) {
+        window.clearInterval(speakLoop);
+        speakLoop = null;
+      }
+    };
+
     beepPattern();
     vibrate();
-    const firstSpeak = window.setTimeout(announce, 1200); // let the beeps land first
-    const beepLoop = window.setInterval(() => {
-      beepPattern();
-      vibrate();
-    }, 4000);
-    const speakLoop = window.setInterval(announce, 8000);
+    const firstSpeak = window.setTimeout(doAnnounce, 1200); // let the beep land first
+    const vibrateLoop = window.setInterval(vibrate, 4000);
+    speakLoop = window.setInterval(doAnnounce, 8000);
 
     return () => {
       window.clearTimeout(firstSpeak);
-      window.clearInterval(beepLoop);
-      window.clearInterval(speakLoop);
+      window.clearInterval(vibrateLoop);
+      if (speakLoop !== null) window.clearInterval(speakLoop);
       stopBeeps();
       stopSpeaking();
       if (typeof navigator !== "undefined" && "vibrate" in navigator) {

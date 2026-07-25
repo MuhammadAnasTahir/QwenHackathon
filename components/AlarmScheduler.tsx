@@ -97,11 +97,19 @@ export function AlarmScheduler() {
     return () => window.clearInterval(id);
   }, [openRing]);
 
-  // "Test alarm in N seconds" — EVT_TEST_ALARM { seconds }.
+  // "Test/demo alarm in N seconds" — EVT_TEST_ALARM { seconds, alarmId }.
+  // Rings via a precise setTimeout instead of the ordinary poll + minute-
+  // granularity findDueAlarm() match, which can be off by up to ~90s — no
+  // good for a live demo that promises "rings in N seconds". When alarmId
+  // is given (the alarms-page "quick demo" button), that saved alarm is
+  // rung as a real (non-test) ring so Taken/Snooze log + mark-fired as
+  // usual; the caller is expected to have pre-marked it fired so the
+  // ordinary poll doesn't independently re-ring the same slot.
   useEffect(() => {
     const onTest = (e: Event) => {
-      const detail = (e as CustomEvent<{ seconds?: number }>).detail;
-      const seconds = Number(detail?.seconds ?? 10);
+      const detail = (e as CustomEvent<{ seconds?: number; alarmId?: string }>).detail;
+      const seconds = Number(detail?.seconds ?? 45);
+      const alarmId = detail?.alarmId;
       if (testTimer.current !== null) window.clearTimeout(testTimer.current);
       testTimer.current = window.setTimeout(
         () => {
@@ -112,6 +120,13 @@ export function AlarmScheduler() {
             saved = loadAlarms();
           } catch {
             saved = [];
+          }
+          if (alarmId) {
+            const alarm = saved.find((a) => a.id === alarmId);
+            if (alarm) {
+              void openRing(alarm, hhmm, false);
+              return;
+            }
           }
           const alarm = saved[0] ?? demoAlarm(hhmm);
           void openRing(alarm, hhmm, true);

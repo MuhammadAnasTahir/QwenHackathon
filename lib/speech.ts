@@ -268,28 +268,32 @@ export function initAudio(): void {
   }
 }
 
-function playBeepGroup(ctx: AudioContext): void {
-  // Three short rising beeps — an "attention" pattern.
-  const freqs = [880, 1046, 1318];
-  freqs.forEach((freq, i) => {
-    const t0 = ctx.currentTime + i * 0.28;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, t0);
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(t0 + 0.26);
-  });
+function playBeep(ctx: AudioContext): void {
+  // A single plain tone — not a repeating pattern that has to run for the
+  // whole ring duration, just a short "something needs attention" cue.
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(1000, t0);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.37);
 }
 
+let beepStopTimer: ReturnType<typeof setTimeout> | null = null;
+const BEEP_TONE_DURATION_MS = 4500;
+const BEEP_TONE_INTERVAL_MS = 700;
+
 /**
- * Start the repeating alarm beep pattern (3 rising beeps every ~2s).
- * Safe to call repeatedly; each call restarts the loop.
+ * Play a simple beep tone for ~4.5s, then stop on its own — it's just an
+ * initial attention cue, not a sound meant to run under the whole alarm
+ * (a beep looping for the entire ring duration is what made it painful).
+ * Safe to call repeatedly; each call restarts the tone from the top.
  */
 export function beepPattern(): void {
   if (typeof window === "undefined") return;
@@ -297,15 +301,20 @@ export function beepPattern(): void {
   const ctx = audioCtx;
   if (!ctx) return;
   stopBeeps();
-  playBeepGroup(ctx);
-  beepTimer = setInterval(() => playBeepGroup(ctx), 2000);
+  playBeep(ctx);
+  beepTimer = setInterval(() => playBeep(ctx), BEEP_TONE_INTERVAL_MS);
+  beepStopTimer = setTimeout(stopBeeps, BEEP_TONE_DURATION_MS);
 }
 
-/** Stop the alarm beep loop. Safe to call at any time. */
+/** Stop the alarm beep tone. Safe to call at any time. */
 export function stopBeeps(): void {
   if (beepTimer !== null) {
     clearInterval(beepTimer);
     beepTimer = null;
+  }
+  if (beepStopTimer !== null) {
+    clearTimeout(beepStopTimer);
+    beepStopTimer = null;
   }
 }
 
@@ -349,10 +358,12 @@ function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisV
 }
 
 /**
- * Speak `text` aloud; resolves when speech finishes (or immediately if TTS
- * is unavailable). Any speech already in progress is cancelled first.
+ * Speak `text` through the browser's built-in speechSynthesis; resolves when
+ * speech finishes (or immediately if TTS is unavailable). This is the
+ * fallback engine — see `speak()` below for the Google-TTS-first version
+ * actually used by alarms.
  */
-export async function speak(text: string, lang: Lang): Promise<void> {
+async function speakViaBrowser(text: string, lang: Lang): Promise<void> {
   if (!ttsAvailable() || !text.trim()) return;
   const synth = window.speechSynthesis;
   synth.cancel();
@@ -392,22 +403,105 @@ export async function speak(text: string, lang: Lang): Promise<void> {
   });
 }
 
-/** Cancel any ongoing speech immediately. */
+// ── Google Cloud TTS (primary engine, via /api/tts) ──────────────────────────
+//
+// Browser speechSynthesis has no reliable Urdu voice on most devices — the
+// Google voice sounds like actual Urdu, so it's the primary path. The
+// response audio is cached per (lang, text) since an alarm repeats the same
+// announcement several times, and there's no reason to re-fetch (or re-bill)
+// identical audio each time.
+
+const ttsAudioCache = new Map<string, Promise<Blob>>();
+let currentAudio: HTMLAudioElement | null = null;
+let currentAudioSettle: (() => void) | null = null;
+
+function fetchGoogleTtsAudio(text: string, lang: Lang): Promise<Blob> {
+  const key = `${lang}:${text}`;
+  const cached = ttsAudioCache.get(key);
+  if (cached) return cached;
+
+  const pending = fetch("/api/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, lang }),
+  }).then((res) => {
+    if (!res.ok) throw new Error(`tts-http-${res.status}`);
+    return res.blob();
+  });
+  ttsAudioCache.set(key, pending);
+  pending.catch(() => ttsAudioCache.delete(key)); // don't cache failures
+  return pending;
+}
+
+async function speakViaGoogleTts(text: string, lang: Lang): Promise<void> {
+  const blob = await fetchGoogleTtsAudio(text, lang);
+  const url = URL.createObjectURL(blob);
+  await new Promise<void>((resolve, reject) => {
+    const audio = new Audio(url);
+    currentAudio = audio;
+    let settled = false;
+    const finish = (ok: boolean, err?: unknown) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+      currentAudioSettle = null;
+      if (ok) resolve();
+      else reject(err instanceof Error ? err : new Error("tts-playback-failed"));
+    };
+    currentAudioSettle = () => finish(true);
+    audio.onended = () => finish(true);
+    audio.onerror = () => finish(false, new Error("tts-playback-failed"));
+    audio.play().catch((err) => finish(false, err));
+  });
+}
+
+/**
+ * Speak `text` aloud for `lang`, preferring Google Cloud TTS (proper Urdu
+ * voice quality) and falling back to the browser's speechSynthesis if
+ * Google TTS is unavailable (no API key configured, offline, upstream
+ * error) — using `fallbackText` for that fallback if given, e.g. a Roman
+ * Urdu transliteration that reads better through an English voice than
+ * Nastaliq Urdu script does. Resolves when speech finishes.
+ */
+export async function speak(text: string, lang: Lang, fallbackText?: string): Promise<void> {
+  if (!text.trim()) return;
+  stopSpeaking();
+  try {
+    await speakViaGoogleTts(text, lang);
+    return;
+  } catch {
+    // Fall through to the browser engine below.
+  }
+  if (fallbackText) {
+    // fallbackText is a Roman Urdu transliteration (Latin script) meant to
+    // be read by an English voice — feeding it to an "ur" voice makes the
+    // engine try to pronounce Latin letters phonetically in Urdu, which
+    // comes out as garbled noise, not speech.
+    await speakViaBrowser(fallbackText, "en");
+  } else {
+    await speakViaBrowser(text, lang);
+  }
+}
+
+/** Cancel any ongoing speech immediately (either engine). */
 export function stopSpeaking(): void {
+  if (currentAudio) {
+    try {
+      currentAudio.pause();
+    } catch {
+      /* ignore */
+    }
+    currentAudio = null;
+  }
+  if (currentAudioSettle) {
+    currentAudioSettle();
+    currentAudioSettle = null;
+  }
   if (!ttsAvailable()) return;
   if (ttsKeepAlive !== null) {
     clearInterval(ttsKeepAlive);
     ttsKeepAlive = null;
   }
   window.speechSynthesis.cancel();
-}
-
-/**
- * Whether an installed TTS voice exists for the language.
- * Async-safe: waits for `voiceschanged` before answering.
- */
-export async function hasVoiceFor(lang: Lang): Promise<boolean> {
-  const voices = await getVoices();
-  const prefix = lang === "ur" ? "ur" : "en";
-  return voices.some((v) => v.lang.toLowerCase().startsWith(prefix));
 }

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  EVT_TEST_ALARM,
   type Alarm,
   type FoodTiming,
   type Frequency,
@@ -16,6 +17,7 @@ import {
   composeUrduAnnouncement,
   deleteAlarm,
   loadAlarms,
+  markFired,
   saveAlarm,
 } from "@/lib/alarms";
 import { idbGet, idbSet } from "@/lib/idb";
@@ -121,14 +123,23 @@ export default function AlarmsPage() {
     refresh();
   }, [refresh]);
 
+  const DEMO_DELAY_SECONDS = 30;
+
   /**
-   * Demo helper: create a real alarm that rings 2 minutes from now. Uses the
-   * ordinary alarm plumbing (buildAlarmsFromExtraction → save → poll → ring),
-   * so the demo exercises exactly the same code path a real prescription does.
+   * Demo helper: create a real alarm (persisted the same way a real
+   * prescription's alarm is) that rings exactly DEMO_DELAY_SECONDS from now.
+   *
+   * Ringing itself goes through EVT_TEST_ALARM's precise setTimeout rather
+   * than the ordinary poll + findDueAlarm() minute-granularity match — that
+   * matcher only resolves to whole-minute slots (checked every 20s with a
+   * small early/late grace window), so a 30s target could take up to ~90s
+   * to actually ring, breaking the button's promise. We still save the real
+   * Alarm (so it shows in the list like any other) and pre-mark its slot as
+   * fired so the ordinary poll doesn't also independently ring it later.
    */
   const quickDemoAlarm = () => {
     const now = new Date();
-    const target = new Date(now.getTime() + 2 * 60_000);
+    const target = new Date(now.getTime() + DEMO_DELAY_SECONDS * 1000);
     const hh = String(target.getHours()).padStart(2, "0");
     const mm = String(target.getMinutes()).padStart(2, "0");
     const time = `${hh}:${mm}`;
@@ -155,6 +166,8 @@ export default function AlarmsPage() {
       created_at: now.toISOString(),
     };
     saveAlarm(alarm);
+    markFired(id, todayStr(), time);
+    window.dispatchEvent(new CustomEvent(EVT_TEST_ALARM, { detail: { seconds: DEMO_DELAY_SECONDS, alarmId: id } }));
     setQuickAddedTime(time);
     refresh();
     window.setTimeout(() => setQuickAddedTime(null), 8000);
@@ -195,9 +208,10 @@ export default function AlarmsPage() {
       </header>
 
       <main className="flex-1 space-y-4 px-4 py-4">
-        {/* Quick demo: sets a real alarm 2 minutes from now, exercising the
-            same code path as a real prescription. Useful for showing judges
-            the ring flow without waiting for a scheduled time to arrive. */}
+        {/* Quick demo: sets a real alarm that rings exactly 30s from now via
+            EVT_TEST_ALARM's precise timer (see quickDemoAlarm). Useful for
+            showing judges the ring flow without waiting for a scheduled
+            time to arrive. */}
         <button
           type="button"
           onClick={quickDemoAlarm}
@@ -214,8 +228,8 @@ export default function AlarmsPage() {
               ? `الارم ${quickAddedTime} پر بجے گا`
               : `Alarm will ring at ${quickAddedTime}`
             : ur
-              ? "دو منٹ بعد کا الارم بنائیں (ڈیمو)"
-              : "Set a demo alarm 2 minutes from now"}
+              ? "30 سیکنڈ بعد کا الارم بنائیں (ڈیمو)"
+              : "Set a demo alarm 30 seconds from now"}
         </button>
 
         {/* Photograph-the-prescription CTA — ALWAYS visible, no matter how

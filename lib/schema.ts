@@ -170,7 +170,7 @@ export interface Alarm {
 
 // ── Cross-component events (window CustomEvent names)
 
-export const EVT_TEST_ALARM = "ss:test-alarm"; // detail: { seconds: number }
+export const EVT_TEST_ALARM = "ss:test-alarm"; // detail: { seconds: number; alarmId?: string }
 export const EVT_TRACE = "ss:trace"; // detail: PipelineTrace (DevPanel listens)
 export const LS_ALARMS = "ss_alarms";
 export const LS_LANG = "ss_lang";
