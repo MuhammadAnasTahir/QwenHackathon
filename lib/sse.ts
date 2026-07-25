@@ -54,6 +54,7 @@ export function sseResponse(
       try {
         await producer(send);
       } catch (err) {
+        console.error("[SSE Error]", err);
         const msg = err instanceof Error ? err.message : String(err);
         send({ type: "error", message: msg.slice(0, 200) });
       } finally {
