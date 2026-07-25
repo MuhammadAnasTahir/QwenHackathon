@@ -43,6 +43,7 @@ function badgeStyle(model: string): string {
   const m = model.toLowerCase();
   if (m.includes("plus")) return "bg-emerald-100 text-emerald-800 border-emerald-300";
   if (m.includes("max")) return "bg-violet-100 text-violet-800 border-violet-300";
+  if (m.includes("reducto")) return "bg-sky-100 text-sky-800 border-sky-300";
   return "bg-stone-100 text-stone-600 border-stone-300";
 }
 
@@ -130,14 +131,17 @@ export function DevPanel() {
               <>
                 {/* Legend */}
                 <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-sky-300 bg-sky-100 px-2 py-0.5 font-bold text-sky-800">
+                    reducto — OCR
+                  </span>
                   <span className="rounded-full border border-emerald-300 bg-emerald-100 px-2 py-0.5 font-bold text-emerald-800">
-                    qwen plus — vision
+                    qwen plus — vision + interpretation
                   </span>
                   <span className="rounded-full border border-violet-300 bg-violet-100 px-2 py-0.5 font-bold text-violet-800">
-                    qwen max — reasoning
+                    qwen max — safety reasoning
                   </span>
                   <span className="rounded-full border border-stone-300 bg-stone-100 px-2 py-0.5 font-bold text-stone-600">
-                    browser
+                    server
                   </span>
                 </div>
 
