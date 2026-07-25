@@ -67,39 +67,6 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
   const isDisabled = disabled || !supported;
 
   return (
-<<<<<<< HEAD
-    <div className="relative inline-flex shrink-0">
-      <button
-        type="button"
-        onClick={() => void tap()}
-        disabled={isDisabled}
-        aria-label={listening ? t("chat_listening") : t("chat_tap_mic")}
-        aria-pressed={listening}
-        className={`relative flex h-20 w-20 shrink-0 select-none items-center justify-center rounded-full text-3xl shadow-lg transition-colors ${
-          listening
-            ? "animate-pulse bg-red-500 text-white ring-4 ring-red-300"
-            : "bg-emerald-600 text-white active:bg-emerald-700"
-        } ${isDisabled ? "cursor-not-allowed opacity-40" : ""}`}
-      >
-        <span aria-hidden="true">🎤</span>
-        {listening ? (
-          <span
-            aria-hidden="true"
-            className="absolute -top-1 -end-1 h-4 w-4 rounded-full bg-red-600 ring-2 ring-white"
-          />
-        ) : null}
-      </button>
-      {errorMsg ? (
-        <div
-          role="alert"
-          dir="auto"
-          className={`absolute top-full left-1/2 z-10 mt-2 w-max max-w-56 -translate-x-1/2 rounded-xl bg-red-600 px-3 py-2 text-center text-sm font-bold text-white shadow-lg ${
-            lang === "ur" ? "font-urdu" : ""
-          }`}
-        >
-          {errorMsg}
-        </div>
-=======
     <button
       type="button"
       onClick={() => void tap()}
@@ -119,9 +86,8 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
           aria-hidden="true"
           className="absolute -top-1 -end-1 h-4 w-4 rounded-full bg-red-600 ring-2 ring-white"
         />
->>>>>>> pr-1
       ) : null}
-    </div>
+    </button>
   );
 }
 

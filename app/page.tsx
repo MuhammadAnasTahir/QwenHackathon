@@ -6,7 +6,6 @@ import { useLang } from "@/lib/i18n";
 import { type Alarm } from "@/lib/schema";
 import { deleteAlarm, loadAlarms } from "@/lib/alarms";
 import { idbGet } from "@/lib/idb";
-import { BigButton } from "@/components/BigButton";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { AddAlarmDialog } from "@/components/AddAlarmDialog";
 import { PrescriptionExtractDialog } from "@/components/PrescriptionExtractDialog";

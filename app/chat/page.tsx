@@ -586,14 +586,8 @@ export default function ChatPage() {
       </main>
 
       {/* Composer */}
-<<<<<<< HEAD
-      <footer className="border-t border-stone-200 bg-white px-3 pb-3 pt-2">
-        {/* Attached document preview — a small file card, like a chat app.
-            Press send (with or without a question) to submit it. */}
-=======
       <footer className="border-t border-stone-200 bg-white px-2 pb-2 pt-1">
         {/* Attached photo preview */}
->>>>>>> pr-1
         {attachment ? (
           <div className="mb-2 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-2">
             {/* eslint-disable-next-line @next/next/no-img-element */}

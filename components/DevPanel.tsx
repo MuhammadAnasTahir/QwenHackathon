@@ -104,16 +104,11 @@ export function DevPanel() {
           className="relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-300 bg-white/95 text-xl font-bold text-stone-700 shadow-lg backdrop-blur transition-colors active:bg-stone-100"
         >
           <span aria-hidden="true">🔍</span>
-<<<<<<< HEAD
-          <span>Judge Mode</span>
-          {visibleSteps.length > 0 ? (
-            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
-              {visibleSteps.length}
-=======
+
           {last ? (
             <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-[10px] font-bold text-emerald-800 shadow-sm ring-2 ring-white">
               {last.steps.length}
->>>>>>> pr-1
+
             </span>
           ) : null}
         </button>
