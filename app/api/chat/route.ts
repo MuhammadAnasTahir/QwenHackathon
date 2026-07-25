@@ -9,7 +9,7 @@
 // of send instead of staring at a spinner for 15–30s while the model finishes.
 
 import type OpenAI from "openai";
-import { qwen, VISION_MODEL, timed } from "@/lib/qwen";
+import { FAST_MODE, qwen, VISION_MODEL, timed } from "@/lib/qwen";
 import { CHAT_SYSTEM } from "@/lib/prompts";
 import type { ChatApiResponse, Lang, PipelineStep } from "@/lib/schema";
 import { sseResponse } from "@/lib/sse";
@@ -84,14 +84,22 @@ export async function POST(req: Request) {
       "chat reply",
       VISION_MODEL,
       async () => {
-        const stream = await qwen.chat.completions.create({
+        // Cast lets us pass Qwen-specific `enable_thinking` / `reasoning_effort`
+        // via the OpenAI SDK's pass-through body without TS whining about unknown keys.
+        // We also cast the return so TS knows it's the streaming variant.
+        const stream = (await qwen.chat.completions.create({
           model: VISION_MODEL,
           temperature: 0.7,
           stream: true,
           messages: oaMessages,
-        });
+          ...FAST_MODE,
+        } as unknown as Parameters<typeof qwen.chat.completions.create>[0])) as unknown as AsyncIterable<{
+          choices?: { delta?: { content?: string } }[];
+        }>;
         for await (const chunk of stream) {
-          const delta = chunk.choices?.[0]?.delta?.content;
+          const choice = chunk.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta?.content;
           if (typeof delta !== "string" || delta.length === 0) continue;
           full += delta;
 

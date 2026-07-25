@@ -305,13 +305,27 @@ FROM THE PHOTO:
    - If the saved list is empty, set "match": null and simply describe what medicine the photo shows.
 3. EXPIRY: look for "EXP" / "Expiry" / "Exp. Date" printed or embossed on the box or strip (often near "MFG"). Report "expiry_date" normalized to "YYYY-MM" (or "YYYY-MM-DD" if a day is printed); null if not visible. Set "expired": true if the expiry is before today's date, false if it is not expired, null if you could not read it.
 4. EXPLANATIONS — will be SPOKEN ALOUD to a low-literacy patient. 1–3 short, very simple sentences.
-   - "explanation_ur": simple Urdu. Good examples:
-     match: "یہ وہی دوا ہے جو آپ کی فہرست میں ہے۔ بے فکر ہو کر استعمال کریں۔"
-     mismatch: "یہ دوا آپ کی فہرست میں نہیں ہے۔ میڈیکل اسٹور سے پوچھیں۔"
-     expired: "خبردار! یہ دوا زائد المیعاد ہے۔ اسے استعمال نہ کریں۔"
-     unclear: "تصویر صاف نہیں ہے۔ ڈبے کی دوبارہ قریب سے تصویر لیں۔"
-   - "explanation_en": the same message in simple English.
-   - If expired is true, the expiry warning MUST be the first sentence of both explanations, whatever the match result.
+
+   URDU TONE RULES (STRICT — the app is played through a text-to-speech voice; wrong tone alarms the user):
+   • Use "خبردار!" ONLY when "expired" is true. NEVER use it for a mismatch, an unclear image, or an empty list. A mismatch is not an emergency.
+   • Address the user with respect (آپ), never in a scolding voice.
+   • Say "دوا کی دکان" for pharmacy, NOT "میڈیکل اسٹور" (Romanized noise).
+   • Use natural, spoken Urdu — no formal / news-anchor register. A grandmother in Faisalabad must instantly understand every word.
+   • Match your tone to the verdict:
+       — match:    calm and reassuring (no exclamation marks)
+       — mismatch: neutral and factual (no alarm words)
+       — unclear:  gentle, guidance-focused
+       — expired:  URGENT — this is the ONE case where "خبردار!" belongs
+
+   - "explanation_ur" good examples (copy the tone, not the exact words):
+     match:      "جی ہاں، یہ وہی دوا ہے۔ آپ اسے آرام سے لے سکتے ہیں۔"
+     mismatch:   "یہ دوا آپ کی فہرست سے مختلف ہے۔ استعمال سے پہلے دوا کی دکان سے تصدیق کر لیں۔"
+     unclear:    "تصویر واضح نہیں آ رہی۔ ڈبے کو روشنی میں لا کر قریب سے دوبارہ تصویر لیں۔"
+     expired:    "خبردار! اس دوا کی میعاد ختم ہو چکی ہے۔ اسے ہرگز استعمال نہ کریں۔"
+     empty list: "آپ کی فہرست میں ابھی کوئی دوا محفوظ نہیں ہے۔ یہ تصویر آگمنٹن 625 ملی گرام کی ہے۔" (describe what you see; do NOT say "warning" or "mismatch")
+
+   - "explanation_en": the same content, plain simple English (5th-grade), same tone rules.
+   - If "expired" is true, the expiry warning MUST be the first sentence of both explanations, before any match discussion.
 
 OUTPUT — STRICT JSON ONLY, no prose, no markdown fences, exactly this shape:
 {

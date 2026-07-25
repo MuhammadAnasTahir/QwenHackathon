@@ -20,6 +20,7 @@ import {
   qwen,
   VISION_MODEL,
   REASONING_MODEL,
+  FAST_MODE,
   parseJsonLoose,
   timed,
   coerceExtraction,
@@ -168,13 +169,22 @@ export async function POST(req: Request) {
           "medical grounding + safety",
           REASONING_MODEL,
           async (): Promise<SafetyResult> => {
+            // FAST_MODE disables Max's hidden chain-of-thought — this task
+            // is small (a JSON list vs known pharmacology facts), the model
+            // does not need to reason for 90s over it. Cuts this step from
+            // ~90s to ~5-15s.
             const completion = await qwen.chat.completions.create({
               model: REASONING_MODEL,
               temperature: 0.2,
               messages: [{ role: "user", content: GROUNDING_PROMPT(voted) }],
-            });
+              ...FAST_MODE,
+            } as unknown as Parameters<typeof qwen.chat.completions.create>[0]);
+            // The cast above hides the return type — narrow it back.
+            const c = completion as unknown as {
+              choices?: { message?: { content?: string } }[];
+            };
             return coerceSafety(
-              parseJsonLoose(completion.choices?.[0]?.message?.content ?? ""),
+              parseJsonLoose(c.choices?.[0]?.message?.content ?? ""),
             );
           },
           trace,

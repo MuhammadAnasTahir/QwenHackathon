@@ -9,6 +9,7 @@ import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess } from "@/lib/image";
 import { streamJson } from "@/lib/streamClient";
 import { CaptureOrUpload } from "./CaptureOrUpload";
 import { ExtractReview } from "./ExtractReview";
+import { ProgressTimeline, type ProgressStage } from "./ProgressTimeline";
 
 /**
  * Full-flow dialog for turning a photograph into alarms without leaving the
@@ -19,51 +20,6 @@ import { ExtractReview } from "./ExtractReview";
  */
 
 type Stage = "picker" | "loading" | "review" | "error";
-
-// Progress stages match the server SSE frames (see app/api/extract/route.ts).
-type ProgressKey = "prep" | "ocr" | "vision" | "vote" | "safety";
-type ProgressStatus = "pending" | "running" | "done";
-
-interface ProgressRow {
-  key: ProgressKey;
-  status: ProgressStatus;
-  label_ur: string;
-  label_en: string;
-  emoji: string;
-}
-
-function initialProgress(): ProgressRow[] {
-  return [
-    {
-      key: "prep",
-      status: "pending",
-      emoji: "🖼️",
-      label_ur: "تصویر تیار کی جا رہی ہے",
-      label_en: "Preparing image",
-    },
-    {
-      key: "ocr",
-      status: "pending",
-      emoji: "🔎",
-      label_ur: "دستاویز پڑھی جا رہی ہے",
-      label_en: "Reading document",
-    },
-    {
-      key: "vision",
-      status: "pending",
-      emoji: "💊",
-      label_ur: "دوائیں نکالی جا رہی ہیں",
-      label_en: "Extracting medicines",
-    },
-    {
-      key: "safety",
-      status: "pending",
-      emoji: "🛡️",
-      label_ur: "حفاظت کی جانچ",
-      label_en: "Checking for safety issues",
-    },
-  ];
-}
 
 export interface PrescriptionExtractDialogProps {
   open: boolean;
@@ -84,7 +40,8 @@ export function PrescriptionExtractDialog({
   const [photo, setPhoto] = useState<string | null>(null);
   const [data, setData] = useState<ExtractApiResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [progress, setProgress] = useState<ProgressRow[]>(initialProgress);
+  const [currentStage, setCurrentStage] = useState<ProgressStage | null>(null);
+  const [finishedProgress, setFinishedProgress] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -92,29 +49,18 @@ export function PrescriptionExtractDialog({
       setPhoto(null);
       setData(null);
       setErrorMsg(null);
-      setProgress(initialProgress());
+      setCurrentStage(null);
+      setFinishedProgress(false);
     }
   }, [open]);
 
   if (!open) return null;
 
-  const markStage = (key: ProgressKey) => {
-    setProgress((prev) => {
-      const idx = prev.findIndex((p) => p.key === key);
-      if (idx < 0) return prev;
-      return prev.map((p, i) => {
-        if (i < idx && p.status !== "done") return { ...p, status: "done" };
-        if (i === idx) return { ...p, status: "running" };
-        return p;
-      });
-    });
-  };
-
   const runExtract = async (file: File) => {
     setStage("loading");
     setErrorMsg(null);
-    setProgress(initialProgress());
-    markStage("prep");
+    setCurrentStage("prep");
+    setFinishedProgress(false);
 
     let full: string;
     try {
@@ -143,7 +89,7 @@ export function PrescriptionExtractDialog({
       "/api/extract",
       { image: full },
       {
-        onProgress: (stageKey) => markStage(stageKey as ProgressKey),
+        onProgress: (stageKey) => setCurrentStage(stageKey as ProgressStage),
         onDone: (payload) => {
           holder.value = payload as unknown as ExtractApiResponse;
         },
@@ -169,7 +115,7 @@ export function PrescriptionExtractDialog({
     }
 
     // Mark all stages as done, dispatch trace for DevPanel.
-    setProgress((prev) => prev.map((p) => ({ ...p, status: "done" as const })));
+    setFinishedProgress(true);
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent(EVT_TRACE, {
@@ -202,7 +148,8 @@ export function PrescriptionExtractDialog({
     setPhoto(null);
     setData(null);
     setErrorMsg(null);
-    setProgress(initialProgress());
+    setCurrentStage(null);
+    setFinishedProgress(false);
   };
 
   // ── Stage: picker — delegate to CaptureOrUpload. ──────────────────────────
@@ -239,32 +186,7 @@ export function PrescriptionExtractDialog({
               {ur ? "نسخہ پڑھا جا رہا ہے…" : "Reading your prescription…"}
             </h2>
 
-            <ol className="w-full space-y-2">
-              {progress.map((p) => {
-                const label = ur ? p.label_ur : p.label_en;
-                const style =
-                  p.status === "done"
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                    : p.status === "running"
-                      ? "bg-amber-50 text-amber-800 border-amber-200 animate-pulse"
-                      : "bg-stone-50 text-stone-400 border-stone-200";
-                const icon =
-                  p.status === "done" ? "✅" : p.status === "running" ? p.emoji : "○";
-                return (
-                  <li
-                    key={p.key}
-                    className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 ${style}`}
-                  >
-                    <span aria-hidden="true" className="text-xl leading-none">
-                      {icon}
-                    </span>
-                    <span className={`flex-1 text-base font-bold ${urduFont}`} dir="auto">
-                      {label}
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
+            <ProgressTimeline currentStage={currentStage} finished={finishedProgress} />
           </div>
         </div>
       </div>

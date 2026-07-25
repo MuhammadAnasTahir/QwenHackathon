@@ -22,6 +22,7 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { ExtractReview } from "@/components/ExtractReview";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { MicButton } from "@/components/MicButton";
+import { ProgressTimeline, type ProgressStage } from "@/components/ProgressTimeline";
 import RedFlagBanner from "@/components/RedFlagBanner";
 
 // ── Message model (transcript items) ─────────────────────────────────────────
@@ -73,6 +74,7 @@ export default function ChatPage() {
   const [attachBusy, setAttachBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const [extractStage, setExtractStage] = useState<ProgressStage | null>(null);
   const [redFlag, setRedFlag] = useState(false);
   const [muted, setMuted] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -222,40 +224,7 @@ export default function ChatPage() {
     sayReply(done.reply);
   };
 
-  // ── Action chip: read the prescription (streaming with staged progress) ───
-
-  const extractStageLabel = (stage: string): string => {
-    if (ur) {
-      switch (stage) {
-        case "prep":
-          return "تصویر تیار کی جا رہی ہے…";
-        case "ocr":
-          return "دستاویز پڑھی جا رہی ہے…";
-        case "vision":
-          return "دوائیں نکالی جا رہی ہیں…";
-        case "vote":
-          return "تصدیق کی جا رہی ہے…";
-        case "safety":
-          return "حفاظت کی جانچ ہو رہی ہے…";
-        default:
-          return "چل رہا ہے…";
-      }
-    }
-    switch (stage) {
-      case "prep":
-        return "Preparing image…";
-      case "ocr":
-        return "Reading document…";
-      case "vision":
-        return "Extracting medicines…";
-      case "vote":
-        return "Cross-checking readings…";
-      case "safety":
-        return "Checking for safety issues…";
-      default:
-        return "Working…";
-    }
-  };
+  // ── Action chip: read the prescription (streaming with staged timeline) ──
 
   const doExtract = async () => {
     const img = attachment;
@@ -265,7 +234,8 @@ export default function ChatPage() {
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
-    setBusyLabel(extractStageLabel("prep"));
+    setBusyLabel(null); // The timeline replaces the single-line label for extract.
+    setExtractStage("prep");
 
     const extractHolder: { value: ExtractApiResponse | null; failed: boolean } = {
       value: null,
@@ -276,7 +246,7 @@ export default function ChatPage() {
       "/api/extract",
       { image: img.full },
       {
-        onProgress: (stage) => setBusyLabel(extractStageLabel(stage)),
+        onProgress: (stage) => setExtractStage(stage as ProgressStage),
         onDone: (payload) => {
           extractHolder.value = payload as unknown as ExtractApiResponse;
         },
@@ -287,7 +257,7 @@ export default function ChatPage() {
     );
 
     setBusy(false);
-    setBusyLabel(null);
+    setExtractStage(null);
 
     if (extractHolder.failed || !extractHolder.value) {
       appendError();
@@ -458,11 +428,23 @@ export default function ChatPage() {
           );
         })}
 
-        {/* Progress skeleton — only shown while we haven't started streaming
-            tokens yet. Chat streams almost immediately, so this typically
-            appears for < 1s. Extract shows staged labels ("Reading document…"
-            → "Extracting medicines…" → "Checking for safety issues…"). */}
-        {busy && busyLabel ? (
+        {/* Extract timeline — shown while /api/extract is running. Each row
+            transitions pending → running → done as SSE progress events land,
+            just like Claude's "reading / searching / responding" pill list. */}
+        {extractStage !== null ? (
+          <div className="flex justify-start">
+            <div className="w-full max-w-[85%] rounded-2xl rounded-ss-md border border-stone-100 bg-white p-3 shadow-sm">
+              <p className={`mb-2 text-sm font-bold text-stone-500 ${urduFont}`} dir="auto">
+                {ur ? "نسخہ پڑھا جا رہا ہے…" : "Reading your prescription…"}
+              </p>
+              <ProgressTimeline currentStage={extractStage} />
+            </div>
+          </div>
+        ) : null}
+
+        {/* Chat-reply skeleton — only visible for the ~1s before the first
+            token lands. Never shown when the extract timeline is up. */}
+        {busy && busyLabel && extractStage === null ? (
           <div className="flex justify-start">
             <div className="flex items-center gap-3 rounded-2xl rounded-ss-md border border-stone-100 bg-white px-4 py-3 shadow-sm">
               <span className="flex gap-1" aria-hidden="true">
