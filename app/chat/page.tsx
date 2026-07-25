@@ -7,9 +7,11 @@ import {
   SS_CHAT,
   type ChatApiRequest,
   type ChatApiResponse,
+  type ExtractApiResponse,
   type PipelineTrace,
 } from "@/lib/schema";
 import { useLang } from "@/lib/i18n";
+import { buildAlarmsFromExtraction, saveAlarm } from "@/lib/alarms";
 import { hasUrduCapableVoice, initAudio, speak, stopSpeaking } from "@/lib/speech";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
 import { streamJson } from "@/lib/streamClient";
@@ -37,6 +39,15 @@ interface AlarmsLinkMsg {
   id: string;
   kind: "alarms_link";
 }
+/** A "do you want to add these to your alarms?" prompt card. Alarms are only
+ * created when the user taps Yes — never automatically. */
+interface AlarmOfferMsg {
+  id: string;
+  kind: "alarm_offer";
+  image: string; // full data URL to run extraction on
+  status: "pending" | "adding" | "done" | "empty";
+  count?: number;
+}
 interface VoiceMsg {
   id: string;
   kind: "voice";
@@ -46,7 +57,7 @@ interface VoiceMsg {
   durationMs?: number;
   autoPlay?: boolean;
 }
-type Msg = ChatMsg | AlarmsLinkMsg | VoiceMsg;
+type Msg = ChatMsg | AlarmsLinkMsg | AlarmOfferMsg | VoiceMsg;
 
 interface Attachment {
   full: string; // preprocessed image sent to the API + stored with alarms
@@ -108,6 +119,18 @@ function isPureGreeting(text: string): boolean {
   return false;
 }
 
+/** Does the user want to add medicines to their alarms? (English / Roman /
+ * Urdu). Used to offer the gated "add to alarms" card from a typed request. */
+function isAddAlarmIntent(text: string): boolean {
+  if (/الارم|یاد ?دہانی|شیڈول|ریمائنڈر/.test(text)) return true;
+  const c = text.toLowerCase();
+  const hasNoun = /\b(alarm|alarms|reminder|reminders|schedule)\b/.test(c);
+  const hasVerb = /\b(add|set|create|make|put|save|register)\b/.test(c);
+  if (hasNoun && hasVerb) return true;
+  if (hasNoun && /\b(my|the|these|to)\b/.test(c)) return true;
+  return false;
+}
+
 /** Tell the DevPanel what just happened (trace steps + raw payload). */
 function dispatchTrace(trace: PipelineTrace, payload?: unknown): void {
   if (typeof window === "undefined") return;
@@ -133,6 +156,10 @@ export default function ChatPage() {
   // Windows laptop: usually no). Determined once on mount. When false, Urdu
   // voice replies are requested in Roman Urdu and spoken with an English voice.
   const urduVoiceRef = useRef<boolean>(true);
+
+  // The most recent prescription image sent in this chat — lets a typed
+  // "add to my alarms" request extract from it without re-uploading.
+  const lastRxImageRef = useRef<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -226,6 +253,62 @@ export default function ChatPage() {
         m.kind === "chat" && m.id === id ? { ...m, text: m.text + chunk } : m,
       ),
     );
+  const updateOffer = (id: string, patch: Partial<AlarmOfferMsg>) =>
+    setMessages((prev) =>
+      prev.map((m) => (m.kind === "alarm_offer" && m.id === id ? { ...m, ...patch } : m)),
+    );
+
+  /** User tapped "Yes" on an alarm-offer card: extract the prescription and
+   * create alarms. This is the ONLY path that creates alarms from chat. */
+  const confirmAddAlarms = async (offerId: string, image: string) => {
+    if (busy) return;
+    updateOffer(offerId, { status: "adding" });
+    setBusy(true);
+    const holder: { value: ExtractApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+    await streamJson(
+      "/api/extract",
+      { image },
+      {
+        onDone: (payload) => {
+          holder.value = payload as unknown as ExtractApiResponse;
+        },
+        onError: () => {
+          holder.failed = true;
+        },
+      },
+    );
+    setBusy(false);
+
+    if (holder.failed || !holder.value) {
+      updateOffer(offerId, { status: "pending" });
+      appendError(false);
+      return;
+    }
+    const res = holder.value;
+    dispatchTrace(res.trace, res);
+    if (res.result.medicines.length === 0) {
+      updateOffer(offerId, { status: "empty" });
+      return;
+    }
+    try {
+      const alarms = await buildAlarmsFromExtraction(res.result, image);
+      for (const a of alarms) saveAlarm(a);
+      updateOffer(offerId, { status: "done", count: alarms.length });
+      const text = ur
+        ? `${alarms.length > 1 ? `${alarms.length} دواؤں کے` : "دوا کے"} الارم بن گئے ہیں۔ وقت پر گھنٹی بجے گی۔`
+        : `${alarms.length > 1 ? `Alarms for ${alarms.length} medicines are set.` : "Your medicine alarm is set."} It will ring on time.`;
+      append(
+        { id: nextId(), kind: "chat", role: "assistant", text },
+        { id: nextId(), kind: "alarms_link" },
+      );
+    } catch {
+      updateOffer(offerId, { status: "pending" });
+      appendError(false);
+    }
+  };
 
   /**
    * Speak the assistant's reply — but only when the user asked by voice.
@@ -342,6 +425,28 @@ export default function ChatPage() {
       return;
     }
 
+    // "Add to my alarms" typed request — the app creates alarms, not the model.
+    // If a prescription was sent earlier, offer to add from it; otherwise ask
+    // for a photo.
+    if (!img && isAddAlarmIntent(text)) {
+      setInput("");
+      if (lastRxImageRef.current) {
+        append(userMsg, {
+          id: nextId(),
+          kind: "alarm_offer",
+          image: lastRxImageRef.current,
+          status: "pending",
+        });
+      } else {
+        const msg = ur
+          ? "الارم بنانے کے لیے پہلے اپنے نسخے کی تصویر بھیجیں۔ پھر میں دوائیں پڑھ کر الارم بنا دوں گا۔"
+          : "To create alarms, please send a photo of your prescription first. Then I can read the medicines and set the alarms.";
+        append(userMsg, { id: nextId(), kind: "chat", role: "assistant", text: msg });
+        if (viaVoice) sayReply(msg, true, replySpeakLang);
+      }
+      return;
+    }
+
     const replyId = nextId();
     append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
     setInput("");
@@ -395,6 +500,13 @@ export default function ChatPage() {
     // Only speak the reply when the user asked by voice. On no-Urdu-voice
     // devices the reply is Roman Urdu, spoken with the English voice.
     sayReply(done.reply, viaVoice, replySpeakLang);
+
+    // If a prescription image was sent, remember it and offer to add alarms —
+    // gated behind the user's Yes, never automatic. Skip for red-flag turns.
+    if (img && !done.red_flag) {
+      lastRxImageRef.current = img.full;
+      append({ id: nextId(), kind: "alarm_offer", image: img.full, status: "pending" });
+    }
   };
 
   // ── Voice message: voice in → voice out (no visible text) ─────────────────
@@ -535,6 +647,71 @@ export default function ChatPage() {
                 durationMs={m.durationMs}
                 autoPlay={m.autoPlay}
               />
+            );
+          }
+          if (m.kind === "alarm_offer") {
+            const offer = m;
+            return (
+              <div
+                key={m.id}
+                className="flex justify-start"
+              >
+                <div className="w-full max-w-[90%] rounded-2xl rounded-ss-md border-2 border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
+                  {offer.status === "pending" ? (
+                    <>
+                      <p
+                        className={`mb-3 text-lg font-bold text-emerald-900 ${urduFont}`}
+                        dir="auto"
+                      >
+                        ⏰ {ur
+                          ? "کیا میں ان دواؤں کے الارم بنا دوں؟"
+                          : "Do you want me to add these medicines to your alarms?"}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void confirmAddAlarms(offer.id, offer.image)}
+                          className={`flex min-h-14 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-lg font-extrabold text-white shadow-md active:bg-emerald-700 disabled:opacity-40 ${urduFont}`}
+                        >
+                          ✅ {ur ? "ہاں، بنائیں" : "Yes, add"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => removeMsg(offer.id)}
+                          className={`flex min-h-14 items-center justify-center gap-2 rounded-2xl border-2 border-stone-300 bg-white text-lg font-extrabold text-stone-700 active:bg-stone-50 disabled:opacity-40 ${urduFont}`}
+                        >
+                          {ur ? "نہیں" : "No"}
+                        </button>
+                      </div>
+                    </>
+                  ) : offer.status === "adding" ? (
+                    <div className="flex items-center gap-3">
+                      <span className="flex gap-1" aria-hidden="true">
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:0ms]" />
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:150ms]" />
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:300ms]" />
+                      </span>
+                      <span className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
+                        {ur ? "نسخہ پڑھ کر الارم بنائے جا رہے ہیں…" : "Reading the prescription and adding alarms…"}
+                      </span>
+                    </div>
+                  ) : offer.status === "done" ? (
+                    <p className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
+                      ✅ {ur
+                        ? `${offer.count ?? 0} الارم بن گئے`
+                        : `${offer.count ?? 0} alarm${(offer.count ?? 0) === 1 ? "" : "s"} added`}
+                    </p>
+                  ) : (
+                    <p className={`text-base font-bold text-stone-600 ${urduFont}`} dir="auto">
+                      {ur
+                        ? "اس تصویر میں کوئی دوا نہیں ملی۔ صاف تصویر بھیجیں۔"
+                        : "No medicines found in this image. Please try a clearer photo."}
+                    </p>
+                  )}
+                </div>
+              </div>
             );
           }
           return (
