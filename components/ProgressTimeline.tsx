@@ -29,9 +29,9 @@ interface TimelineRow {
 const TIMELINE: TimelineRow[] = [
   {
     key: "prep",
-    emoji: "🖼️",
-    label_ur: "تصویر تیار کی جا رہی ہے",
-    label_en: "Preparing image",
+    emoji: "📄",
+    label_ur: "دستاویز کی جانچ",
+    label_en: "Parsing document",
   },
   {
     key: "ocr",
@@ -42,14 +42,14 @@ const TIMELINE: TimelineRow[] = [
   {
     key: "vision",
     emoji: "💊",
-    label_ur: "دوائیں نکالی جا رہی ہیں",
-    label_en: "Extracting medicines",
+    label_ur: "معلومات نکالی جا رہی ہیں",
+    label_en: "Extracting document",
   },
   {
     key: "safety",
-    emoji: "🛡️",
-    label_ur: "حفاظت کی جانچ",
-    label_en: "Checking for safety",
+    emoji: "✨",
+    label_ur: "حتمی جانچ",
+    label_en: "Finalising",
   },
 ];
 

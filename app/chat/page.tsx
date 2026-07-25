@@ -33,6 +33,10 @@ interface ChatMsg {
   role: "user" | "assistant";
   text: string;
   image?: string | null;
+  /** For user messages: was this sent via the mic? Assistant replies inherit
+   * this flag from their preceding user turn — that's how we decide whether
+   * the reply should be spoken aloud. */
+  viaVoice?: boolean;
 }
 interface ExtractMsg {
   id: string;
@@ -76,16 +80,11 @@ export default function ChatPage() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [extractStage, setExtractStage] = useState<ProgressStage | null>(null);
   const [redFlag, setRedFlag] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
-  const mutedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    mutedRef.current = muted;
-  }, [muted]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -108,17 +107,31 @@ export default function ChatPage() {
       ),
     );
 
-  const sayReply = (text: string) => {
-    if (!mutedRef.current) void speak(text, lang).catch(() => {});
+  /**
+   * Speak the assistant's reply — but only when the user asked by voice.
+   * Rationale: if you can type, you can read; the play-on-every-message UX
+   * is noise. Voice reply is opt-in via the mic (a "voice message").
+   */
+  const sayReply = (text: string, viaVoice: boolean) => {
+    if (!viaVoice) return;
+    setSpeaking(true);
+    void speak(text, lang)
+      .catch(() => {})
+      .finally(() => setSpeaking(false));
   };
 
-  const appendError = (offlineCheck = true) => {
+  const cancelSpeaking = () => {
+    stopSpeaking();
+    setSpeaking(false);
+  };
+
+  const appendError = (viaVoice: boolean, offlineCheck = true) => {
     const text =
       offlineCheck && typeof navigator !== "undefined" && !navigator.onLine
         ? t("error_offline")
         : t("error_generic");
     append({ id: nextId(), kind: "chat", role: "assistant", text });
-    sayReply(text);
+    sayReply(text, viaVoice);
   };
 
   // ── Attach a photo / PDF ───────────────────────────────────────────────────
@@ -133,7 +146,7 @@ export default function ChatPage() {
       const thumb = await thumbnail(full);
       setAttachment({ full, thumb });
     } catch {
-      appendError(false);
+      appendError(false, false);
     } finally {
       setAttachBusy(false);
     }
@@ -145,12 +158,12 @@ export default function ChatPage() {
   // it as they stream in. The user sees words appearing within ~1s instead of
   // staring at a spinner for the full model latency.
 
-  const sendChat = async (rawText: string) => {
+  const sendChat = async (rawText: string, viaVoice: boolean = false) => {
     const text = rawText.trim();
     const img = attachment;
     if (busy || (!text && !img)) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
 
     const content = text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
     const userMsg: ChatMsg = {
@@ -159,6 +172,7 @@ export default function ChatPage() {
       role: "user",
       text,
       image: img?.thumb ?? null,
+      viaVoice,
     };
 
     const history: ChatApiRequest["messages"] = [
@@ -214,14 +228,14 @@ export default function ChatPage() {
 
     if (chatHolder.failed || !chatHolder.gotAnything || !chatHolder.value) {
       removeMsg(replyId);
-      appendError();
+      appendError(viaVoice);
       return;
     }
     const done = chatHolder.value;
     dispatchTrace(done.trace, done);
     setRedFlag(done.red_flag);
-    // Speech only makes sense on the final full text.
-    sayReply(done.reply);
+    // Only speak the reply when the user asked by voice.
+    sayReply(done.reply, viaVoice);
   };
 
   // ── Action chip: read the prescription (streaming with staged timeline) ──
@@ -230,7 +244,7 @@ export default function ChatPage() {
     const img = attachment;
     if (busy || !img) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
@@ -260,7 +274,7 @@ export default function ChatPage() {
     setExtractStage(null);
 
     if (extractHolder.failed || !extractHolder.value) {
-      appendError();
+      appendError(false);
       return;
     }
     const done = extractHolder.value;
@@ -270,7 +284,6 @@ export default function ChatPage() {
         ? "تصویر سے کوئی دوا نہیں پڑھی جا سکی۔ برائے مہربانی صاف تصویر لیں۔"
         : "Could not read any medicines from the image. Please try a clearer photo.";
       append({ id: nextId(), kind: "chat", role: "assistant", text });
-      sayReply(text);
       return;
     }
     append({ id: nextId(), kind: "extract", data: done, photo: img.full });
@@ -282,7 +295,7 @@ export default function ChatPage() {
     const img = attachment;
     if (busy || !img) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_check_box"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
@@ -313,9 +326,8 @@ export default function ChatPage() {
       }
       const text = lines.filter(Boolean).join("\n");
       append({ id: nextId(), kind: "chat", role: "assistant", text });
-      sayReply(text);
     } catch {
-      appendError();
+      appendError(false);
     } finally {
       setBusy(false);
     }
@@ -333,7 +345,6 @@ export default function ChatPage() {
       { id: nextId(), kind: "chat", role: "assistant", text },
       { id: nextId(), kind: "alarms_link" }
     );
-    if (!mutedRef.current) void speak(text, lang).catch(() => {});
   };
 
   const onRetake = (reviewMsgId: string) => () => {
@@ -347,14 +358,6 @@ export default function ChatPage() {
   const urduFont = ur ? "font-urdu leading-loose" : "";
   const chipCls =
     "flex min-h-14 items-center gap-2 rounded-full border-2 border-emerald-200 bg-white px-5 text-lg font-bold text-emerald-800 shadow-sm transition-transform active:scale-95";
-
-  const toggleMute = () => {
-    setMuted((m) => {
-      const next = !m;
-      if (next) stopSpeaking();
-      return next;
-    });
-  };
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col">
@@ -370,17 +373,6 @@ export default function ChatPage() {
         <h1 className={`flex-1 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
           💬 {t("home_chat")}
         </h1>
-        <button
-          type="button"
-          onClick={toggleMute}
-          aria-pressed={muted}
-          aria-label={muted ? "unmute" : "mute"}
-          className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-2xl transition-colors ${
-            muted ? "bg-stone-200 text-stone-500" : "bg-emerald-100 text-emerald-700"
-          }`}
-        >
-          <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
-        </button>
         <LanguageToggle />
       </header>
 
@@ -404,7 +396,15 @@ export default function ChatPage() {
 
         {messages.map((m) => {
           if (m.kind === "chat") {
-            return <ChatMessage key={m.id} role={m.role} text={m.text} image={m.image} />;
+            return (
+              <ChatMessage
+                key={m.id}
+                role={m.role}
+                text={m.text}
+                image={m.image}
+                viaVoice={m.viaVoice}
+              />
+            );
           }
           if (m.kind === "extract") {
             return (
@@ -456,6 +456,26 @@ export default function ChatPage() {
                 {busyLabel}
               </span>
             </div>
+          </div>
+        ) : null}
+
+        {/* Speaking indicator — appears while the phone is reading the voice
+            reply aloud. Tap to interrupt. */}
+        {speaking ? (
+          <div className="flex justify-start">
+            <button
+              type="button"
+              onClick={cancelSpeaking}
+              className={`flex items-center gap-3 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-emerald-800 shadow-sm transition-transform active:scale-95 ${urduFont}`}
+              dir="auto"
+            >
+              <span aria-hidden="true" className="animate-pulse text-xl leading-none">
+                🔊
+              </span>
+              <span className="text-sm font-bold">
+                {ur ? "بولا جا رہا ہے — روکنے کے لیے دبائیں" : "Speaking — tap to stop"}
+              </span>
+            </button>
           </div>
         ) : null}
         <div ref={bottomRef} />
@@ -547,7 +567,8 @@ export default function ChatPage() {
           <MicButton
             onResult={(text) => {
               setInput("");
-              void sendChat(text);
+              // Voice-message flow: mic → send as voice → auto-spoken reply.
+              void sendChat(text, true);
             }}
             onInterim={(s) => setInput(s)}
             disabled={busy}
