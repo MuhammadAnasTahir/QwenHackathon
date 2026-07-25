@@ -22,9 +22,10 @@ import { CaptureOrUpload } from "@/components/CaptureOrUpload";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ExtractReview } from "@/components/ExtractReview";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { MicButton } from "@/components/MicButton";
 import { ProgressTimeline, type ProgressStage } from "@/components/ProgressTimeline";
 import RedFlagBanner from "@/components/RedFlagBanner";
+import { VoiceMessage } from "@/components/VoiceMessage";
+import { VoiceRecordButton } from "@/components/VoiceRecordButton";
 
 // ── Message model (transcript items) ─────────────────────────────────────────
 
@@ -49,7 +50,16 @@ interface AlarmsLinkMsg {
   id: string;
   kind: "alarms_link";
 }
-type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg;
+interface VoiceMsg {
+  id: string;
+  kind: "voice";
+  role: "user" | "assistant";
+  audioUrl?: string | null; // user recording (object URL); null after restore
+  text?: string | null; // underlying text — NEVER displayed; used for TTS + history context
+  durationMs?: number;
+  autoPlay?: boolean;
+}
+type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg | VoiceMsg;
 
 interface Attachment {
   full: string; // preprocessed image sent to the API + stored with alarms
@@ -115,13 +125,17 @@ export default function ChatPage() {
       if (!raw) return;
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
-      // Trust structurally but filter to known kinds.
+      // Trust structurally but filter to known kinds. Restored voice messages
+      // never auto-play (autoPlay is stripped on save) and lose their audioUrl
+      // (blob URLs don't survive navigation) — they show as static bubbles.
       const restored: Msg[] = parsed.filter(
         (m: unknown): m is Msg =>
           m !== null &&
           typeof m === "object" &&
           "kind" in m &&
-          ((m as Msg).kind === "chat" || (m as Msg).kind === "alarms_link"),
+          ((m as Msg).kind === "chat" ||
+            (m as Msg).kind === "alarms_link" ||
+            (m as Msg).kind === "voice"),
       );
       if (restored.length > 0) setMessages(restored);
     } catch {
@@ -135,12 +149,18 @@ export default function ChatPage() {
     if (typeof window === "undefined") return;
     try {
       const serializable = messages
-        .filter((m) => m.kind === "chat" || m.kind === "alarms_link")
+        .filter((m) => m.kind === "chat" || m.kind === "alarms_link" || m.kind === "voice")
         .map((m) => {
-          if (m.kind !== "chat") return m;
-          // Drop the image data URL — too big for sessionStorage quota and
-          // not useful to see in a restored session.
-          return { ...m, image: null };
+          if (m.kind === "chat") {
+            // Drop the image data URL — too big for sessionStorage quota.
+            return { ...m, image: null };
+          }
+          if (m.kind === "voice") {
+            // Blob object URLs don't survive navigation, and autoPlay must not
+            // re-fire on restore — strip both. `text` stays for history context.
+            return { ...m, audioUrl: null, autoPlay: false };
+          }
+          return m;
         });
       window.sessionStorage.setItem(SS_CHAT, JSON.stringify(serializable));
     } catch {
@@ -184,6 +204,22 @@ export default function ChatPage() {
     sayReply(text, viaVoice);
   };
 
+  // Build the model conversation history from the transcript, including BOTH
+  // typed chat messages and voice messages (whose hidden `text` is the STT
+  // transcript / spoken reply). ExtractReview and alarm-link items are skipped.
+  const imagePlaceholder = () => (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
+  const buildHistory = (extra: ChatApiRequest["messages"]): ChatApiRequest["messages"] => {
+    const prior: ChatApiRequest["messages"] = [];
+    for (const m of messages) {
+      if (m.kind === "chat") {
+        prior.push({ role: m.role, content: m.text || imagePlaceholder() });
+      } else if (m.kind === "voice" && m.text) {
+        prior.push({ role: m.role, content: m.text });
+      }
+    }
+    return [...prior, ...extra];
+  };
+
   // ── Attach a photo / PDF ───────────────────────────────────────────────────
 
   const onFile = async (f: File | undefined | null) => {
@@ -225,15 +261,7 @@ export default function ChatPage() {
       viaVoice,
     };
 
-    const history: ChatApiRequest["messages"] = [
-      ...messages
-        .filter((m): m is ChatMsg => m.kind === "chat")
-        .map((m) => ({
-          role: m.role,
-          content: m.text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo"),
-        })),
-      { role: "user" as const, content },
-    ];
+    const history = buildHistory([{ role: "user", content }]);
 
     const replyId = nextId();
     append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
@@ -286,6 +314,82 @@ export default function ChatPage() {
     setRedFlag(done.red_flag);
     // Only speak the reply when the user asked by voice.
     sayReply(done.reply, viaVoice);
+  };
+
+  // ── Voice message: voice in → voice out (no visible text) ─────────────────
+  //
+  // The recorder gives us the user's audio (for playback) + a transcript. The
+  // transcript goes to the text-only model but is NEVER shown; the reply comes
+  // back as an auto-playing voice bubble, also with no visible text.
+
+  const sendVoice = async (capture: {
+    transcript: string;
+    audioUrl: string | null;
+    durationMs: number;
+  }) => {
+    const transcript = capture.transcript.trim();
+    if (busy || !transcript) return;
+    initAudio();
+    cancelSpeaking();
+
+    const userVoice: VoiceMsg = {
+      id: nextId(),
+      kind: "voice",
+      role: "user",
+      audioUrl: capture.audioUrl,
+      text: transcript,
+      durationMs: capture.durationMs,
+    };
+    const history = buildHistory([{ role: "user", content: transcript }]);
+    append(userVoice);
+    setBusy(true);
+    setBusyLabel(ur ? "جواب تیار ہو رہا ہے…" : "Preparing a reply…");
+
+    const body: ChatApiRequest = { messages: history, language: lang };
+    const holder: { value: ChatApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/chat",
+      body,
+      {
+        onDone: (payload) => {
+          holder.value = payload as unknown as ChatApiResponse;
+        },
+        onError: () => {
+          holder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setBusyLabel(null);
+
+    if (holder.failed || !holder.value) {
+      const errText = ur
+        ? "معذرت، جواب نہیں مل سکا۔ دوبارہ کوشش کریں۔"
+        : "Sorry, I could not get a reply. Please try again.";
+      append({
+        id: nextId(),
+        kind: "voice",
+        role: "assistant",
+        text: errText,
+        autoPlay: true,
+      });
+      return;
+    }
+    const done = holder.value;
+    dispatchTrace(done.trace, done);
+    setRedFlag(done.red_flag);
+    append({
+      id: nextId(),
+      kind: "voice",
+      role: "assistant",
+      text: done.reply,
+      autoPlay: true,
+    });
   };
 
   // ── Action chip: read the prescription (streaming with staged timeline) ──
@@ -456,6 +560,19 @@ export default function ChatPage() {
               />
             );
           }
+          if (m.kind === "voice") {
+            return (
+              <VoiceMessage
+                key={m.id}
+                role={m.role}
+                audioUrl={m.audioUrl}
+                text={m.text}
+                lang={lang}
+                durationMs={m.durationMs}
+                autoPlay={m.autoPlay}
+              />
+            );
+          }
           if (m.kind === "extract") {
             return (
               <ExtractReview
@@ -614,13 +731,8 @@ export default function ChatPage() {
             className={`h-16 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
           />
 
-          <MicButton
-            onResult={(text) => {
-              setInput("");
-              // Voice-message flow: mic → send as voice → auto-spoken reply.
-              void sendChat(text, true);
-            }}
-            onInterim={(s) => setInput(s)}
+          <VoiceRecordButton
+            onRecorded={(capture) => void sendVoice(capture)}
             disabled={busy}
           />
 

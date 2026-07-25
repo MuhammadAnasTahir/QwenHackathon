@@ -239,6 +239,197 @@ export function stopListening(): void {
   }
 }
 
+// ── Voice-message recording (audio blob + transcript together) ───────────────
+//
+// For the chat "voice message" UX we need TWO things from one mic session:
+//   1. A playable audio recording (so the user's bubble can replay their voice)
+//   2. A transcript (Qwen is text-only, so this is what actually gets sent)
+// We run MediaRecorder and SpeechRecognition in parallel on the same mic.
+// The transcript is the critical path; the audio is best-effort (if the
+// recorder fails, we still return the transcript and the bubble just won't
+// have playback).
+
+export interface VoiceCaptureResult {
+  transcript: string;
+  audioUrl: string | null; // object URL of the recording, or null
+  durationMs: number;
+}
+
+export interface VoiceRecordingController {
+  stop(): Promise<VoiceCaptureResult>;
+  cancel(): void;
+}
+
+function pickAudioMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm", "audio/mp4", "audio/ogg"];
+  for (const c of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    } catch {
+      // isTypeSupported can throw on some engines — ignore and try the next.
+    }
+  }
+  return "";
+}
+
+/**
+ * Begin a voice-message capture: opens the mic, starts recording audio, and
+ * simultaneously runs speech recognition. The returned controller lets the
+ * caller stop (→ resolves with { transcript, audioUrl, durationMs }) or cancel.
+ *
+ * Rejects only if the mic can't be opened at all. If recognition fails but
+ * audio recorded, transcript comes back empty (caller decides what to do).
+ */
+export async function startVoiceRecording(
+  lang: Lang,
+  onInterim?: (s: string) => void,
+): Promise<VoiceRecordingController> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error("mic-unavailable");
+  }
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    throw new Error("mic-permission-denied");
+  }
+
+  const startedAt = Date.now();
+
+  // ── Audio recording (best-effort) ──
+  const chunks: BlobPart[] = [];
+  let recorder: MediaRecorder | null = null;
+  const mime = pickAudioMime();
+  try {
+    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.start();
+  } catch {
+    recorder = null; // recording unsupported — transcript-only fallback
+  }
+
+  // ── Speech recognition (transcript, best-effort) ──
+  let transcript = "";
+  const Ctor = getRecognitionCtor();
+  let rec: SpeechRecognitionLike | null = null;
+  if (Ctor) {
+    rec = new Ctor();
+    rec.lang = lang === "ur" ? "ur-PK" : "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+    rec.maxAlternatives = 1;
+    let finalText = "";
+    let interimText = "";
+    rec.onresult = (e: SREvent) => {
+      interimText = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const result = e.results[i];
+        const alt = result[0];
+        if (!alt) continue;
+        if (result.isFinal) finalText += alt.transcript;
+        else interimText += alt.transcript;
+      }
+      transcript = (finalText + interimText).trim();
+      if (onInterim && transcript) onInterim(transcript);
+    };
+    rec.onend = () => {
+      transcript = (finalText || interimText || transcript).trim();
+    };
+    try {
+      rec.start();
+    } catch {
+      rec = null;
+    }
+  }
+
+  const cleanupStream = () => {
+    stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // ignore
+      }
+    });
+  };
+
+  let finished = false;
+
+  return {
+    stop(): Promise<VoiceCaptureResult> {
+      return new Promise<VoiceCaptureResult>((resolve) => {
+        if (finished) {
+          resolve({ transcript, audioUrl: null, durationMs: 0 });
+          return;
+        }
+        finished = true;
+        const durationMs = Date.now() - startedAt;
+
+        // Stop recognition (fire-and-forget; transcript already accumulated).
+        if (rec) {
+          try {
+            rec.stop();
+          } catch {
+            // ignore
+          }
+        }
+
+        const finalize = (audioUrl: string | null) => {
+          cleanupStream();
+          // Give recognition a beat to flush its final result.
+          setTimeout(() => {
+            resolve({ transcript: transcript.trim(), audioUrl, durationMs });
+          }, 250);
+        };
+
+        if (recorder && recorder.state !== "inactive") {
+          recorder.onstop = () => {
+            let url: string | null = null;
+            try {
+              if (chunks.length > 0) {
+                const blob = new Blob(chunks, { type: mime || "audio/webm" });
+                url = URL.createObjectURL(blob);
+              }
+            } catch {
+              url = null;
+            }
+            finalize(url);
+          };
+          try {
+            recorder.stop();
+          } catch {
+            finalize(null);
+          }
+        } else {
+          finalize(null);
+        }
+      });
+    },
+    cancel(): void {
+      if (finished) return;
+      finished = true;
+      if (rec) {
+        try {
+          rec.abort();
+        } catch {
+          // ignore
+        }
+      }
+      if (recorder && recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {
+          // ignore
+        }
+      }
+      cleanupStream();
+    },
+  };
+}
+
 // ── Singleton AudioContext + alarm beeps ─────────────────────────────────────
 
 type AudioContextCtor = new () => AudioContext;
