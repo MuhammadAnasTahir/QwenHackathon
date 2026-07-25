@@ -16,7 +16,7 @@ import {
   type Quantity,
   type TakenLogEntry,
 } from "@/lib/schema";
-import { idbDel, idbSet } from "@/lib/idb";
+import { idbDel } from "@/lib/idb";
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -381,7 +381,11 @@ function defaultTimesFor(freq: Frequency): string[] {
  */
 export async function buildAlarmsFromExtraction(
   result: ExtractionResult,
-  photoDataUrl: string | null
+  // The prescription image is intentionally NOT attached to each medicine:
+  // one prescription photo shared across every card looks confusing (the same
+  // crop repeated). Extracted alarms use the generic medicine placeholder
+  // instead; the user can add a real box photo per medicine via Edit.
+  _photoDataUrl?: string | null
 ): Promise<Alarm[]> {
   const today = toDateStr(new Date());
   const nowIso = new Date().toISOString();
@@ -389,15 +393,7 @@ export async function buildAlarmsFromExtraction(
 
   for (const med of result.medicines) {
     const id = makeId();
-    let photoKey: string | null = null;
-    if (photoDataUrl) {
-      photoKey = `photo_${id}`;
-      try {
-        await idbSet(photoKey, photoDataUrl);
-      } catch {
-        photoKey = null; // photo store failed — alarm still works, with placeholder
-      }
-    }
+    const photoKey: string | null = null;
 
     const times =
       Array.isArray(med.times) && med.times.length > 0
