@@ -20,12 +20,14 @@ const FREQ_OPTIONS: { value: AddFrequency; tkey: TKey }[] = [
   { value: "as_needed", tkey: "freq_needed" },
 ];
 
+// "any" is intentionally NOT offered here — for a medicine alarm the user
+// should pick a real food timing. ("any" still exists in the type for the
+// extraction path where the prescription genuinely says nothing about food.)
 const FOOD_OPTIONS: { value: FoodTiming; tkey: TKey }[] = [
   { value: "before_food", tkey: "food_before" },
   { value: "after_food", tkey: "food_after" },
   { value: "empty_stomach", tkey: "food_empty" },
   { value: "with_milk", tkey: "food_milk" },
-  { value: "any", tkey: "food_any" },
 ];
 
 function defaultTimes(freq: AddFrequency): string[] {
@@ -79,7 +81,9 @@ export function AddAlarmDialog({
   const [name, setName] = useState(initialAlarm?.medicine_name ?? "");
   const [freq, setFreq] = useState<AddFrequency>("once_daily");
   const [times, setTimes] = useState<string[]>(initialAlarm?.times ?? defaultTimes("once_daily"));
-  const [food, setFood] = useState<FoodTiming>(initialAlarm?.food ?? "any");
+  // Default to "after_food" (the most common) since "any" is no longer offered.
+  // When editing, keep whatever the alarm already had — including a legacy "any".
+  const [food, setFood] = useState<FoodTiming>(initialAlarm?.food ?? "after_food");
   const [duration, setDuration] = useState<number | null>(initialAlarm?.duration_days ?? null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(false);
@@ -257,7 +261,7 @@ export function AddAlarmDialog({
                         if (!v) return;
                         setTimes((prev) => prev.map((x, j) => (j === i ? v : x)));
                       }}
-                      className="h-14 w-32 rounded-xl border-2 border-stone-200 bg-white px-2 text-center text-xl font-bold text-stone-800 focus:border-emerald-500 focus:outline-none"
+                      className="h-14 w-full min-w-[9.5rem] rounded-xl border-2 border-stone-200 bg-white px-3 text-center text-lg font-bold text-stone-800 focus:border-emerald-500 focus:outline-none"
                     />
                   </label>
                 ))}

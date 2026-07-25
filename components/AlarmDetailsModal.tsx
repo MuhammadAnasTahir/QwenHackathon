@@ -51,7 +51,7 @@ export function AlarmDetailsModal({ alarm, photo, onClose, onEdit, onDelete }: A
   const dotCount =
     alarm.duration_days === null || alarm.duration_days === undefined
       ? 7
-      : Math.max(1, Math.min(14, alarm.duration_days));
+      : Math.max(1, Math.min(31, alarm.duration_days));
 
   const days: { dateStr: string; d: Date }[] = [];
   if (alarm.duration_days && alarm.duration_days > 0) {
@@ -169,7 +169,13 @@ export function AlarmDetailsModal({ alarm, photo, onClose, onEdit, onDelete }: A
 
             <div>
               <p className={`text-sm font-bold text-stone-500 mb-1 ${urduFont}`} dir="auto">
-                {t("adherence_title")}
+                {alarm.duration_days && alarm.duration_days > 0
+                  ? ur
+                    ? `پیش رفت (${dotCount} دن)`
+                    : `Progress (${dotCount} days)`
+                  : ur
+                    ? "پچھلے 7 دن"
+                    : "Last 7 days"}
               </p>
               <div className="flex flex-wrap items-center gap-1.5 bg-white p-2 rounded-xl border border-stone-200 shadow-sm" dir="ltr">
                 {days.map(({ dateStr, d }) => (
