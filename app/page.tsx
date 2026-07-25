@@ -56,7 +56,7 @@ export default function Home() {
       <header className="relative z-10 flex items-center justify-between rounded-full bg-white/80 px-3 py-2 shadow-sm border border-stone-200 backdrop-blur animate-fade-up">
         <div className="flex items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/transparent.png" alt="" className="h-12 w-12 rounded-full" />
+          <img src="/Transparent.png" alt="" className="h-12 w-12 rounded-full" />
           <h1
             className={`text-xl text-emerald-900 ${ur ? "font-urdu font-bold leading-tight" : "font-extrabold leading-none"}`}
             dir={ur ? "rtl" : "ltr"}
