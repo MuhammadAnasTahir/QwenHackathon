@@ -100,14 +100,18 @@ function grayscaleContrastStretch(ctx: CanvasRenderingContext2D, w: number, h: n
 }
 
 /**
- * Downscale to at most `maxDim` px on the longest side (default 1600) and
+ * Downscale to at most `maxDim` px on the longest side (default 1200) and
  * optionally grayscale + contrast-stretch. Returns a JPEG data URL (q 0.85).
+ *
+ * The default was lowered from 1600 → 1200 for demo-day latency: at 1200 px
+ * a typical prescription is still comfortably readable to a VLM, but the
+ * network transfer + model prefill are meaningfully faster.
  */
 export async function preprocess(
   dataUrl: string,
   opts?: { maxDim?: number; grayscale?: boolean }
 ): Promise<string> {
-  const maxDim = opts?.maxDim ?? 1600;
+  const maxDim = opts?.maxDim ?? 1200;
   const grayscale = opts?.grayscale ?? false;
 
   const img = await loadImage(dataUrl);

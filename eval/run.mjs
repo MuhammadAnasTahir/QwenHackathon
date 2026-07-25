@@ -172,9 +172,11 @@ async function main() {
     const t0 = Date.now();
     let data;
     try {
+      // The route streams SSE. We walk the frames and only care about the
+      // final { type: "done", ... } (or { type: "error" }).
       const res = await fetch(EVAL_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ image: dataUrl, ...(EVAL_RUNS ? { runs: EVAL_RUNS } : {}) }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
@@ -182,7 +184,36 @@ async function main() {
         const body = await res.text().catch(() => "");
         throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`);
       }
-      data = await res.json();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = null;
+      let errMsg = null;
+      for (;;) {
+        const { value, done: eof } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          let sep;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const rawEvent = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const line = rawEvent.split("\n").find((l) => l.startsWith("data:"));
+            if (!line) continue;
+            try {
+              const evt = JSON.parse(line.slice(5).trim());
+              if (evt.type === "done") done = evt;
+              else if (evt.type === "error") errMsg = evt.message ?? "server_error";
+            } catch {
+              /* malformed — ignore */
+            }
+          }
+        }
+        if (eof) break;
+      }
+      if (errMsg) throw new Error(errMsg);
+      if (!done) throw new Error("no_done_frame");
+      data = done;
     } catch (e) {
       console.error(`-- ${entry.image}  REQUEST FAILED: ${e.message}`);
       failures.push(`${entry.image}: ${e.message}`);

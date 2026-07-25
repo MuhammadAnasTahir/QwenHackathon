@@ -114,6 +114,9 @@ export interface ChatApiRequest {
   messages: { role: "user" | "assistant"; content: string }[];
   images?: string[]; // data URLs, attached to the LAST user message
   language: Lang;
+  // When true (Urdu + a device with no Urdu voice), reply in Roman Urdu so it
+  // can be spoken with an English TTS voice. Set by the client per-device.
+  romanReply?: boolean;
 }
 export interface ChatApiResponse {
   reply: string;
@@ -175,3 +178,7 @@ export const EVT_TRACE = "ss:trace"; // detail: PipelineTrace (DevPanel listens)
 export const LS_ALARMS = "ss_alarms";
 export const LS_LANG = "ss_lang";
 export const LS_FIRED = "ss_fired"; // { [alarmId_date_time]: true }
+
+// Chat history persists to sessionStorage (per-tab, auto-cleared when the
+// tab closes). Bumping the suffix invalidates old shapes on schema changes.
+export const SS_CHAT = "ss_chat_v1";

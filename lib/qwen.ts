@@ -32,6 +32,27 @@ export const VISION_MODEL = process.env.QWEN_VISION_MODEL ?? "qwen3.7-plus";
 export const REASONING_MODEL = process.env.QWEN_REASONING_MODEL ?? "qwen3.7-max";
 
 /**
+ * Extra params sent to Qwen 3 series when we want the FAST path — no hidden
+ * reasoning phase before the answer. On ModelScope's OpenAI-compat endpoint
+ * these are forwarded to the model via `extra_body`. If the endpoint doesn't
+ * recognize a key, it silently ignores it (typical for OpenAI-compat gateways).
+ *
+ * Use this for:
+ *   - chat replies (perceived latency matters, deep reasoning wastes time)
+ *   - Qwen Max safety pass (small structured task, well-served by direct answer)
+ *
+ * Do NOT use for:
+ *   - prescription extraction (handwriting parsing genuinely benefits from
+ *     the model's chain-of-thought)
+ */
+export const FAST_MODE: Record<string, unknown> = {
+  // Qwen 3.x thinking-mode kill switch. Documented for Qwen 3.0/3.5; also
+  // accepted by 3.7 on ModelScope. Belt-and-braces: pass both known aliases.
+  enable_thinking: false,
+  reasoning_effort: "none",
+};
+
+/**
  * Parse JSON out of raw model output that may be wrapped in markdown fences,
  * prefixed with prose, or suffixed with commentary.
  *

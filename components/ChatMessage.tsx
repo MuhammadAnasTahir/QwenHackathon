@@ -1,15 +1,16 @@
 "use client";
 
-import { SpeakButton } from "./SpeakButton";
 import { isArabicScript } from "./labels";
 
 export interface ChatMessageProps {
   role: "user" | "assistant";
   text: string;
   image?: string | null;
+  /** True when the user sent this turn via the mic (a "voice message"). */
+  viaVoice?: boolean;
 }
 
-export function ChatMessage({ role, text, image }: ChatMessageProps) {
+export function ChatMessage({ role, text, image, viaVoice = false }: ChatMessageProps) {
   const isUser = role === "user";
   const urduText = isArabicScript(text);
 
@@ -31,22 +32,24 @@ export function ChatMessage({ role, text, image }: ChatMessageProps) {
           />
         ) : null}
         {text ? (
-          <p
-            dir={urduText ? "rtl" : "auto"}
-            className={`whitespace-pre-wrap text-lg ${
-              urduText ? "font-urdu leading-loose" : "leading-relaxed"
-            }`}
-          >
-            {text}
-          </p>
-        ) : null}
-        {!isUser && text ? (
-          <div className="mt-2 flex justify-end">
-            <SpeakButton
-              text={text}
-              lang={urduText ? "ur" : "en"}
-              className="h-12 w-12 text-xl"
-            />
+          <div className="flex items-start gap-2">
+            {viaVoice ? (
+              <span
+                aria-hidden="true"
+                className="mt-1 flex-shrink-0 text-base opacity-80"
+                title="Voice message"
+              >
+                🎤
+              </span>
+            ) : null}
+            <p
+              dir={urduText ? "rtl" : "auto"}
+              className={`flex-1 whitespace-pre-wrap text-lg ${
+                urduText ? "font-urdu leading-loose" : "leading-relaxed"
+              }`}
+            >
+              {text}
+            </p>
           </div>
         ) : null}
       </div>

@@ -21,29 +21,18 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
   useEffect(() => {
     initAudio();
 
-    // Pick what to speak for the current UI language. Google TTS (see
-    // lib/speech.ts `speak`) has a proper Urdu voice, so the real Urdu
-    // script is the primary text — `fallbackText` is only used if Google
-    // TTS is unreachable and speech falls back to the browser engine, where
-    // reading the Roman Urdu transliteration (e.g. "Aap ka Panadol khane ka
-    // waqt ho gaya hai") through an English voice comes out understandable,
-    // where the same engine reading Nastaliq Urdu script does not.
-    let spokenLang: "ur" | "en";
-    let announcement: string;
-    let fallbackText: string | undefined;
-    if (lang === "en" && alarm.english_announcement) {
-      spokenLang = "en";
-      announcement = alarm.english_announcement;
-    } else if (alarm.urdu_announcement) {
-      spokenLang = "ur";
-      announcement = alarm.urdu_announcement;
-      fallbackText = alarm.roman_urdu_announcement;
-    } else {
-      spokenLang = "en";
-      announcement = alarm.english_announcement || alarm.urdu_announcement;
-    }
+    // Pick what to speak for the current UI language. `speak()` (see
+    // lib/speech.ts) handles Urdu voice quality itself — cascading through
+    // ur/ar/fa voices and transliterating to Roman Urdu as a last resort —
+    // so we just hand it the real announcement text for the language.
+    const spokenLang: "ur" | "en" =
+      lang === "en" && alarm.english_announcement ? "en" : alarm.urdu_announcement ? "ur" : "en";
+    const announcement =
+      spokenLang === "en"
+        ? alarm.english_announcement || alarm.urdu_announcement
+        : alarm.urdu_announcement;
     const announce = () => {
-      speak(announcement, spokenLang, fallbackText).catch(() => {});
+      speak(announcement, spokenLang).catch(() => {});
     };
 
     const vibrate = () => {
@@ -93,7 +82,7 @@ export function RingOverlay({ alarm, photo, time, onTaken, onSnooze }: RingOverl
         }
       }
     };
-  }, [alarm.id, alarm.urdu_announcement, alarm.roman_urdu_announcement, alarm.english_announcement, time, lang]);
+  }, [alarm.id, alarm.urdu_announcement, alarm.english_announcement, time, lang]);
 
   const silenceAnd = (fn: () => void) => () => {
     stopBeeps();

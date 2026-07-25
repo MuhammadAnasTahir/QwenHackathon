@@ -239,6 +239,197 @@ export function stopListening(): void {
   }
 }
 
+// ── Voice-message recording (audio blob + transcript together) ───────────────
+//
+// For the chat "voice message" UX we need TWO things from one mic session:
+//   1. A playable audio recording (so the user's bubble can replay their voice)
+//   2. A transcript (Qwen is text-only, so this is what actually gets sent)
+// We run MediaRecorder and SpeechRecognition in parallel on the same mic.
+// The transcript is the critical path; the audio is best-effort (if the
+// recorder fails, we still return the transcript and the bubble just won't
+// have playback).
+
+export interface VoiceCaptureResult {
+  transcript: string;
+  audioUrl: string | null; // object URL of the recording, or null
+  durationMs: number;
+}
+
+export interface VoiceRecordingController {
+  stop(): Promise<VoiceCaptureResult>;
+  cancel(): void;
+}
+
+function pickAudioMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm", "audio/mp4", "audio/ogg"];
+  for (const c of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    } catch {
+      // isTypeSupported can throw on some engines — ignore and try the next.
+    }
+  }
+  return "";
+}
+
+/**
+ * Begin a voice-message capture: opens the mic, starts recording audio, and
+ * simultaneously runs speech recognition. The returned controller lets the
+ * caller stop (→ resolves with { transcript, audioUrl, durationMs }) or cancel.
+ *
+ * Rejects only if the mic can't be opened at all. If recognition fails but
+ * audio recorded, transcript comes back empty (caller decides what to do).
+ */
+export async function startVoiceRecording(
+  lang: Lang,
+  onInterim?: (s: string) => void,
+): Promise<VoiceRecordingController> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error("mic-unavailable");
+  }
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    throw new Error("mic-permission-denied");
+  }
+
+  const startedAt = Date.now();
+
+  // ── Audio recording (best-effort) ──
+  const chunks: BlobPart[] = [];
+  let recorder: MediaRecorder | null = null;
+  const mime = pickAudioMime();
+  try {
+    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.start();
+  } catch {
+    recorder = null; // recording unsupported — transcript-only fallback
+  }
+
+  // ── Speech recognition (transcript, best-effort) ──
+  let transcript = "";
+  const Ctor = getRecognitionCtor();
+  let rec: SpeechRecognitionLike | null = null;
+  if (Ctor) {
+    rec = new Ctor();
+    rec.lang = lang === "ur" ? "ur-PK" : "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+    rec.maxAlternatives = 1;
+    let finalText = "";
+    let interimText = "";
+    rec.onresult = (e: SREvent) => {
+      interimText = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const result = e.results[i];
+        const alt = result[0];
+        if (!alt) continue;
+        if (result.isFinal) finalText += alt.transcript;
+        else interimText += alt.transcript;
+      }
+      transcript = (finalText + interimText).trim();
+      if (onInterim && transcript) onInterim(transcript);
+    };
+    rec.onend = () => {
+      transcript = (finalText || interimText || transcript).trim();
+    };
+    try {
+      rec.start();
+    } catch {
+      rec = null;
+    }
+  }
+
+  const cleanupStream = () => {
+    stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // ignore
+      }
+    });
+  };
+
+  let finished = false;
+
+  return {
+    stop(): Promise<VoiceCaptureResult> {
+      return new Promise<VoiceCaptureResult>((resolve) => {
+        if (finished) {
+          resolve({ transcript, audioUrl: null, durationMs: 0 });
+          return;
+        }
+        finished = true;
+        const durationMs = Date.now() - startedAt;
+
+        // Stop recognition (fire-and-forget; transcript already accumulated).
+        if (rec) {
+          try {
+            rec.stop();
+          } catch {
+            // ignore
+          }
+        }
+
+        const finalize = (audioUrl: string | null) => {
+          cleanupStream();
+          // Give recognition a beat to flush its final result.
+          setTimeout(() => {
+            resolve({ transcript: transcript.trim(), audioUrl, durationMs });
+          }, 250);
+        };
+
+        if (recorder && recorder.state !== "inactive") {
+          recorder.onstop = () => {
+            let url: string | null = null;
+            try {
+              if (chunks.length > 0) {
+                const blob = new Blob(chunks, { type: mime || "audio/webm" });
+                url = URL.createObjectURL(blob);
+              }
+            } catch {
+              url = null;
+            }
+            finalize(url);
+          };
+          try {
+            recorder.stop();
+          } catch {
+            finalize(null);
+          }
+        } else {
+          finalize(null);
+        }
+      });
+    },
+    cancel(): void {
+      if (finished) return;
+      finished = true;
+      if (rec) {
+        try {
+          rec.abort();
+        } catch {
+          // ignore
+        }
+      }
+      if (recorder && recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {
+          // ignore
+        }
+      }
+      cleanupStream();
+    },
+  };
+}
+
 // ── Singleton AudioContext + alarm beeps ─────────────────────────────────────
 
 type AudioContextCtor = new () => AudioContext;
@@ -346,38 +537,111 @@ function getVoices(): Promise<SpeechSynthesisVoice[]> {
   });
 }
 
+/**
+ * Pick the best TTS voice for the requested language, with cascading fallbacks.
+ *
+ * For Urdu specifically: Android/iOS ship a Urdu voice; Windows Chrome usually
+ * does NOT. Rather than silently reading Urdu script with an English voice
+ * (which produces garbage or silence), we cascade:
+ *
+ *   1. Any voice with `lang` beginning "ur"   — the ideal case
+ *   2. Any voice with `lang` beginning "ar"   — Arabic voices READ Urdu script
+ *        intelligibly (Urdu is Arabic script + a few extra letters); native
+ *        Urdu speakers understand ~85% of what an Arabic voice reads back
+ *   3. Anything Persian / Farsi (`fa`)        — same script family
+ *   4. null — caller sets utter.lang="ur-PK" and hopes the system picks
+ *        something reasonable
+ *
+ * Log-once helps demo debugging: user can open DevTools and see WHICH voice
+ * was picked for Urdu on their laptop.
+ */
+let voiceLogged = false;
+
 function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisVoice | null {
+  const pool = voices;
+  const lc = (v: SpeechSynthesisVoice) => v.lang.toLowerCase();
+
   if (lang === "ur") {
-    return voices.find((v) => v.lang.toLowerCase().startsWith("ur")) ?? null;
+    // Prefer any Urdu voice, then Arabic (script-compatible), then Persian.
+    const picked =
+      pool.find((v) => lc(v).startsWith("ur")) ??
+      pool.find((v) => lc(v).startsWith("ar")) ??
+      pool.find((v) => lc(v).startsWith("fa")) ??
+      null;
+    if (!voiceLogged && typeof console !== "undefined") {
+      voiceLogged = true;
+      const inventory = pool.map((v) => `${v.name} [${v.lang}]`).join(", ");
+      // eslint-disable-next-line no-console
+      console.info(
+        `[Sehat Saathi TTS] Urdu voice picked: ${picked ? `${picked.name} [${picked.lang}]` : "NONE (falling back to ur-PK hint)"}. Voices available: ${inventory || "(none)"}`,
+      );
+    }
+    return picked;
   }
+
   return (
-    voices.find((v) => v.lang.toLowerCase().startsWith("en-")) ??
-    voices.find((v) => v.lang.toLowerCase().startsWith("en")) ??
+    pool.find((v) => lc(v).startsWith("en-")) ??
+    pool.find((v) => lc(v).startsWith("en")) ??
     null
   );
 }
 
 /**
- * Speak `text` through the browser's built-in speechSynthesis; resolves when
- * speech finishes (or immediately if TTS is unavailable). This is the
- * fallback engine — see `speak()` below for the Google-TTS-first version
- * actually used by alarms.
+ * Ask the server to transliterate Urdu script → Roman Urdu. Returns null on
+ * any failure so the caller can fall back gracefully.
  */
-async function speakViaBrowser(text: string, lang: Lang): Promise<void> {
+async function transliterateToRoman(text: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/translit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    const roman = (data as { roman?: unknown })?.roman;
+    return typeof roman === "string" && roman.trim() ? roman.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Speak `text` aloud; resolves when speech finishes (or immediately if TTS
+ * is unavailable). Any speech already in progress is cancelled first.
+ *
+ * Urdu fallback: if the device has NO Urdu/Arabic/Persian voice (common on
+ * Windows laptops — the reason Urdu replies were silent there), we transliterate
+ * the text to Roman Urdu and speak it with an English voice, which every device
+ * has. On phones with a real Urdu voice, the native voice is used directly.
+ */
+export async function speak(text: string, lang: Lang): Promise<void> {
   if (!ttsAvailable() || !text.trim()) return;
   const synth = window.speechSynthesis;
   synth.cancel();
 
   const voices = await getVoices();
-  const voice = pickVoice(voices, lang);
+  let voice = pickVoice(voices, lang);
+  let speakText = text;
+  let langHint = lang === "ur" ? "ur-PK" : "en-US";
 
-  const utter = new SpeechSynthesisUtterance(text);
+  if (lang === "ur" && !voice) {
+    // No Urdu-capable voice on this device. Transliterate and speak with English.
+    const roman = await transliterateToRoman(text);
+    if (roman) {
+      speakText = roman;
+      voice = pickVoice(voices, "en");
+      langHint = "en-US";
+    }
+  }
+
+  const utter = new SpeechSynthesisUtterance(speakText);
   if (voice) {
     utter.voice = voice;
     utter.lang = voice.lang;
   } else {
-    // No matching voice installed — set the lang hint and try anyway.
-    utter.lang = lang === "ur" ? "ur-PK" : "en-US";
+    // Still no matching voice — set the lang hint and try anyway.
+    utter.lang = langHint;
   }
   utter.rate = 0.95;
 
@@ -403,105 +667,39 @@ async function speakViaBrowser(text: string, lang: Lang): Promise<void> {
   });
 }
 
-// ── Google Cloud TTS (primary engine, via /api/tts) ──────────────────────────
-//
-// Browser speechSynthesis has no reliable Urdu voice on most devices — the
-// Google voice sounds like actual Urdu, so it's the primary path. The
-// response audio is cached per (lang, text) since an alarm repeats the same
-// announcement several times, and there's no reason to re-fetch (or re-bill)
-// identical audio each time.
-
-const ttsAudioCache = new Map<string, Promise<Blob>>();
-let currentAudio: HTMLAudioElement | null = null;
-let currentAudioSettle: (() => void) | null = null;
-
-function fetchGoogleTtsAudio(text: string, lang: Lang): Promise<Blob> {
-  const key = `${lang}:${text}`;
-  const cached = ttsAudioCache.get(key);
-  if (cached) return cached;
-
-  const pending = fetch("/api/tts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, lang }),
-  }).then((res) => {
-    if (!res.ok) throw new Error(`tts-http-${res.status}`);
-    return res.blob();
-  });
-  ttsAudioCache.set(key, pending);
-  pending.catch(() => ttsAudioCache.delete(key)); // don't cache failures
-  return pending;
-}
-
-async function speakViaGoogleTts(text: string, lang: Lang): Promise<void> {
-  const blob = await fetchGoogleTtsAudio(text, lang);
-  const url = URL.createObjectURL(blob);
-  await new Promise<void>((resolve, reject) => {
-    const audio = new Audio(url);
-    currentAudio = audio;
-    let settled = false;
-    const finish = (ok: boolean, err?: unknown) => {
-      if (settled) return;
-      settled = true;
-      URL.revokeObjectURL(url);
-      if (currentAudio === audio) currentAudio = null;
-      currentAudioSettle = null;
-      if (ok) resolve();
-      else reject(err instanceof Error ? err : new Error("tts-playback-failed"));
-    };
-    currentAudioSettle = () => finish(true);
-    audio.onended = () => finish(true);
-    audio.onerror = () => finish(false, new Error("tts-playback-failed"));
-    audio.play().catch((err) => finish(false, err));
-  });
-}
-
-/**
- * Speak `text` aloud for `lang`, preferring Google Cloud TTS (proper Urdu
- * voice quality) and falling back to the browser's speechSynthesis if
- * Google TTS is unavailable (no API key configured, offline, upstream
- * error) — using `fallbackText` for that fallback if given, e.g. a Roman
- * Urdu transliteration that reads better through an English voice than
- * Nastaliq Urdu script does. Resolves when speech finishes.
- */
-export async function speak(text: string, lang: Lang, fallbackText?: string): Promise<void> {
-  if (!text.trim()) return;
-  stopSpeaking();
-  try {
-    await speakViaGoogleTts(text, lang);
-    return;
-  } catch {
-    // Fall through to the browser engine below.
-  }
-  if (fallbackText) {
-    // fallbackText is a Roman Urdu transliteration (Latin script) meant to
-    // be read by an English voice — feeding it to an "ur" voice makes the
-    // engine try to pronounce Latin letters phonetically in Urdu, which
-    // comes out as garbled noise, not speech.
-    await speakViaBrowser(fallbackText, "en");
-  } else {
-    await speakViaBrowser(text, lang);
-  }
-}
-
-/** Cancel any ongoing speech immediately (either engine). */
+/** Cancel any ongoing speech immediately. */
 export function stopSpeaking(): void {
-  if (currentAudio) {
-    try {
-      currentAudio.pause();
-    } catch {
-      /* ignore */
-    }
-    currentAudio = null;
-  }
-  if (currentAudioSettle) {
-    currentAudioSettle();
-    currentAudioSettle = null;
-  }
   if (!ttsAvailable()) return;
   if (ttsKeepAlive !== null) {
     clearInterval(ttsKeepAlive);
     ttsKeepAlive = null;
   }
   window.speechSynthesis.cancel();
+}
+
+/**
+ * Whether an installed TTS voice exists for the language.
+ * Async-safe: waits for `voiceschanged` before answering.
+ */
+export async function hasVoiceFor(lang: Lang): Promise<boolean> {
+  const voices = await getVoices();
+  const prefix = lang === "ur" ? "ur" : "en";
+  return voices.some((v) => v.lang.toLowerCase().startsWith(prefix));
+}
+
+/**
+ * Whether this device can speak Urdu SCRIPT with a native-ish voice — i.e. it
+ * has a Urdu, Arabic, or Persian voice (all read the Arabic script). Phones
+ * usually return true; Windows laptops usually return false.
+ *
+ * The chat flow calls this BEFORE sending a voice message: when it's false, we
+ * ask Qwen to reply in Roman Urdu so it can be spoken with the English voice
+ * (which every device has) — no transliteration round-trip, no silent audio.
+ */
+export async function hasUrduCapableVoice(): Promise<boolean> {
+  const voices = await getVoices();
+  return voices.some((v) => {
+    const l = v.lang.toLowerCase();
+    return l.startsWith("ur") || l.startsWith("ar") || l.startsWith("fa");
+  });
 }

@@ -4,25 +4,28 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   EVT_TRACE,
+  SS_CHAT,
   type Alarm,
   type ChatApiRequest,
   type ChatApiResponse,
-  type ExtractApiRequest,
   type ExtractApiResponse,
   type PipelineTrace,
   type VerifyApiRequest,
   type VerifyResult,
 } from "@/lib/schema";
 import { useLang } from "@/lib/i18n";
-import { initAudio, speak, stopSpeaking } from "@/lib/speech";
+import { hasUrduCapableVoice, initAudio, speak, stopSpeaking } from "@/lib/speech";
 import { loadAlarms, saveAlarm } from "@/lib/alarms";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
+import { streamJson } from "@/lib/streamClient";
 import { CaptureOrUpload } from "@/components/CaptureOrUpload";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ExtractReview } from "@/components/ExtractReview";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { MicButton } from "@/components/MicButton";
+import { ProgressTimeline, type ProgressStage } from "@/components/ProgressTimeline";
 import RedFlagBanner from "@/components/RedFlagBanner";
+import { VoiceMessage } from "@/components/VoiceMessage";
+import { VoiceRecordButton } from "@/components/VoiceRecordButton";
 
 // ── Message model (transcript items) ─────────────────────────────────────────
 
@@ -32,6 +35,10 @@ interface ChatMsg {
   role: "user" | "assistant";
   text: string;
   image?: string | null;
+  /** For user messages: was this sent via the mic? Assistant replies inherit
+   * this flag from their preceding user turn — that's how we decide whether
+   * the reply should be spoken aloud. */
+  viaVoice?: boolean;
 }
 interface ExtractMsg {
   id: string;
@@ -43,7 +50,16 @@ interface AlarmsLinkMsg {
   id: string;
   kind: "alarms_link";
 }
-type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg;
+interface VoiceMsg {
+  id: string;
+  kind: "voice";
+  role: "user" | "assistant";
+  audioUrl?: string | null; // user recording (object URL); null after restore
+  text?: string | null; // underlying text — NEVER displayed; used for TTS + history context
+  durationMs?: number;
+  autoPlay?: boolean;
+}
+type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg | VoiceMsg;
 
 interface Attachment {
   full: string; // preprocessed image sent to the API + stored with alarms
@@ -54,6 +70,55 @@ let msgCounter = 0;
 function nextId(): string {
   msgCounter += 1;
   return `m${Date.now().toString(36)}-${msgCounter}`;
+}
+
+// ── Instant greeting ──────────────────────────────────────────────────────────
+// A bare "hello" / "salam" gets a fixed, instant intro (no model call). Anything
+// with real content ("hello, I have a fever") is NOT a pure greeting and goes to
+// Qwen as normal.
+
+const GREETING_INTRO = {
+  ur: "السلام علیکم! میں صحت ساتھی ہوں — آپ کا صحت کا دوست۔ میں آپ کی مدد کے لیے حاضر ہوں۔ یاد رکھیں، میں ڈاکٹر نہیں ہوں۔",
+  roman:
+    "Assalam o alaikum! Main Sehat Saathi hoon — aap ka sehat ka dost. Main aap ki madad ke liye hazir hoon. Yaad rakhein, main doctor nahi hoon.",
+  en: "Hello, I am Sehat Saathi — your health companion. How can I help you today? Remember, I am not a doctor.",
+};
+
+function isPureGreeting(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 32) return false; // too long to be just a greeting
+  // Urdu-script greetings.
+  if (/^(السلام|اسلام|سلام|ہیلو|ہائے|آداب)/.test(t)) return true;
+  // Normalise Latin: lowercase, letters + spaces only.
+  const c = t
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!c) return false;
+  const exact = new Set([
+    "hello",
+    "hi",
+    "hey",
+    "helo",
+    "hiya",
+    "hello there",
+    "hi there",
+    "salam",
+    "salaam",
+    "asalam",
+    "assalam",
+    "aoa",
+    "adab",
+    "adaab",
+    "hey there",
+  ]);
+  if (exact.has(c)) return true;
+  // "assalam o alaikum", "salam alaikum", etc.
+  if (/^(assalam|asalam|salam|salaam)\b/.test(c)) return true;
+  // "hello/hi/hey <one short word>" e.g. "hello there".
+  if (/^(hello|hi|hey)\b/.test(c) && c.split(" ").length <= 2) return true;
+  return false;
 }
 
 /** Tell the DevPanel what just happened (trace steps + raw payload). */
@@ -72,17 +137,29 @@ export default function ChatPage() {
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachBusy, setAttachBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const [extractStage, setExtractStage] = useState<ProgressStage | null>(null);
   const [redFlag, setRedFlag] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
-  const mutedRef = useRef(false);
+  // Whether this device can speak Urdu script natively (phone: usually yes;
+  // Windows laptop: usually no). Determined once on mount. When false, Urdu
+  // voice replies are requested in Roman Urdu and spoken with an English voice.
+  const urduVoiceRef = useRef<boolean>(true);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    mutedRef.current = muted;
-  }, [muted]);
+    let cancelled = false;
+    void hasUrduCapableVoice().then((has) => {
+      if (!cancelled) urduVoiceRef.current = has;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -96,20 +173,121 @@ export default function ChatPage() {
     return () => stopSpeaking();
   }, []);
 
+  // ── Chat history: sessionStorage (per-tab, cleared when tab closes) ──────
+  //
+  // - Hydrate on mount so navigating away to /alarms and back keeps the
+  //   conversation visible.
+  // - Save on every messages change.
+  // - Strip image data URLs before saving (they're huge — sessionStorage
+  //   quota is small) and drop the ExtractReview messages since they're a
+  //   transient UX step (the review is either confirmed → alarms saved, or
+  //   discarded → gone; either way there's nothing to restore).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.sessionStorage.getItem(SS_CHAT);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      // Trust structurally but filter to known kinds. Restored voice messages
+      // never auto-play (autoPlay is stripped on save) and lose their audioUrl
+      // (blob URLs don't survive navigation) — they show as static bubbles.
+      const restored: Msg[] = parsed.filter(
+        (m: unknown): m is Msg =>
+          m !== null &&
+          typeof m === "object" &&
+          "kind" in m &&
+          ((m as Msg).kind === "chat" ||
+            (m as Msg).kind === "alarms_link" ||
+            (m as Msg).kind === "voice"),
+      );
+      if (restored.length > 0) setMessages(restored);
+    } catch {
+      // Corrupt storage — drop it silently.
+    }
+    // Only hydrate once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const serializable = messages
+        .filter((m) => m.kind === "chat" || m.kind === "alarms_link" || m.kind === "voice")
+        .map((m) => {
+          if (m.kind === "chat") {
+            // Drop the image data URL — too big for sessionStorage quota.
+            return { ...m, image: null };
+          }
+          if (m.kind === "voice") {
+            // Blob object URLs don't survive navigation, and autoPlay must not
+            // re-fire on restore — strip both. `text` stays for history context.
+            return { ...m, audioUrl: null, autoPlay: false };
+          }
+          return m;
+        });
+      window.sessionStorage.setItem(SS_CHAT, JSON.stringify(serializable));
+    } catch {
+      // Quota exceeded / private mode / etc. — best-effort.
+    }
+  }, [messages]);
+
   const append = (...items: Msg[]) => setMessages((prev) => [...prev, ...items]);
   const removeMsg = (id: string) => setMessages((prev) => prev.filter((m) => m.id !== id));
+  const appendTokenTo = (id: string, chunk: string) =>
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.kind === "chat" && m.id === id ? { ...m, text: m.text + chunk } : m,
+      ),
+    );
 
-  const sayReply = (text: string) => {
-    if (!mutedRef.current) void speak(text, lang).catch(() => {});
+  /**
+   * Speak the assistant's reply — but only when the user asked by voice.
+   * Rationale: if you can type, you can read; the play-on-every-message UX
+   * is noise. Voice reply is opt-in via the mic (a "voice message").
+   *
+   * `speakLang` may differ from the UI language: on a device with no Urdu
+   * voice we reply in Roman Urdu and speak it as "en" (English voice reading
+   * phonetic Urdu), which is intelligible and works everywhere.
+   */
+  const sayReply = (text: string, viaVoice: boolean, speakLang: typeof lang = lang) => {
+    if (!viaVoice) return;
+    setSpeaking(true);
+    void speak(text, speakLang)
+      .catch(() => {})
+      .finally(() => setSpeaking(false));
   };
 
-  const appendError = (offlineCheck = true) => {
+  const cancelSpeaking = () => {
+    stopSpeaking();
+    setSpeaking(false);
+  };
+
+  const appendError = (viaVoice: boolean, offlineCheck = true) => {
     const text =
       offlineCheck && typeof navigator !== "undefined" && !navigator.onLine
         ? t("error_offline")
         : t("error_generic");
     append({ id: nextId(), kind: "chat", role: "assistant", text });
-    sayReply(text);
+    // Error strings are UI-language Urdu script; speak() transliterates them
+    // on devices without an Urdu voice.
+    sayReply(text, viaVoice, lang);
+  };
+
+  // Build the model conversation history from the transcript, including BOTH
+  // typed chat messages and voice messages (whose hidden `text` is the STT
+  // transcript / spoken reply). ExtractReview and alarm-link items are skipped.
+  const imagePlaceholder = () => (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
+  const buildHistory = (extra: ChatApiRequest["messages"]): ChatApiRequest["messages"] => {
+    const prior: ChatApiRequest["messages"] = [];
+    for (const m of messages) {
+      if (m.kind === "chat") {
+        prior.push({ role: m.role, content: m.text || imagePlaceholder() });
+      } else if (m.kind === "voice" && m.text) {
+        prior.push({ role: m.role, content: m.text });
+      }
+    }
+    return [...prior, ...extra];
   };
 
   // ── Attach a photo / PDF ───────────────────────────────────────────────────
@@ -120,24 +298,28 @@ export default function ChatPage() {
     try {
       const raw =
         f.type === "application/pdf" ? await pdfFirstPageToDataUrl(f) : await fileToDataUrl(f);
-      const full = await preprocess(raw, { maxDim: 1600 });
+      const full = await preprocess(raw, { maxDim: 1200 });
       const thumb = await thumbnail(full);
       setAttachment({ full, thumb });
     } catch {
-      appendError(false);
+      appendError(false, false);
     } finally {
       setAttachBusy(false);
     }
   };
 
-  // ── Normal chat send ───────────────────────────────────────────────────────
+  // ── Normal chat send (streaming) ──────────────────────────────────────────
+  //
+  // We create an EMPTY assistant message immediately, then append tokens to
+  // it as they stream in. The user sees words appearing within ~1s instead of
+  // staring at a spinner for the full model latency.
 
-  const sendChat = async (rawText: string) => {
+  const sendChat = async (rawText: string, viaVoice: boolean = false) => {
     const text = rawText.trim();
     const img = attachment;
     if (busy || (!text && !img)) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
 
     const content = text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
     const userMsg: ChatMsg = {
@@ -146,73 +328,210 @@ export default function ChatPage() {
       role: "user",
       text,
       image: img?.thumb ?? null,
+      viaVoice,
     };
 
-    // Full history (chat messages only), with a placeholder for image-only turns.
-    const history: ChatApiRequest["messages"] = [
-      ...messages
-        .filter((m): m is ChatMsg => m.kind === "chat")
-        .map((m) => ({
-          role: m.role,
-          content: m.text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo"),
-        })),
-      { role: "user" as const, content },
-    ];
+    const history = buildHistory([{ role: "user", content }]);
 
-    append(userMsg);
+    // Roman-Urdu path: only for voice messages, only in Urdu, only when the
+    // device has no Urdu-capable voice. Keeps proper Urdu script for phones
+    // and for typed messages.
+    const useRoman = viaVoice && ur && !urduVoiceRef.current;
+    const replySpeakLang: typeof lang = useRoman ? "en" : lang;
+
+    // Instant greeting — deterministic intro, no model latency. Only when the
+    // message is a bare greeting and there's no attached image.
+    if (!img && isPureGreeting(text)) {
+      const shown = ur ? GREETING_INTRO.ur : GREETING_INTRO.en;
+      append(userMsg, { id: nextId(), kind: "chat", role: "assistant", text: shown });
+      setInput("");
+      if (viaVoice) {
+        if (useRoman) sayReply(GREETING_INTRO.roman, true, "en");
+        else sayReply(shown, true, lang);
+      }
+      return;
+    }
+
+    const replyId = nextId();
+    append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
     setInput("");
     setAttachment(null);
     setBusy(true);
-    try {
-      const body: ChatApiRequest = {
-        messages: history,
-        images: img ? [img.full] : undefined,
-        language: lang,
-      };
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`chat ${res.status}`);
-      const data = (await res.json()) as ChatApiResponse;
-      dispatchTrace(data.trace, data);
-      setRedFlag(data.red_flag);
-      append({ id: nextId(), kind: "chat", role: "assistant", text: data.reply });
-      sayReply(data.reply);
-    } catch {
-      appendError();
-    } finally {
-      setBusy(false);
+    setBusyLabel(ur ? "سوچ رہا ہوں…" : "Thinking…");
+
+    const body: ChatApiRequest = {
+      messages: history,
+      images: img ? [img.full] : undefined,
+      language: lang,
+      romanReply: useRoman,
+    };
+
+    // Closure-mutated holders (TS won't narrow bare `let`s across an await).
+    const chatHolder: { value: ChatApiResponse | null; gotAnything: boolean; failed: boolean } = {
+      value: null,
+      gotAnything: false,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/chat",
+      body,
+      {
+        onToken: (chunk) => {
+          chatHolder.gotAnything = true;
+          setBusyLabel(null);
+          appendTokenTo(replyId, chunk);
+        },
+        onDone: (payload) => {
+          chatHolder.value = payload as unknown as ChatApiResponse;
+        },
+        onError: () => {
+          chatHolder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setBusyLabel(null);
+
+    if (chatHolder.failed || !chatHolder.gotAnything || !chatHolder.value) {
+      removeMsg(replyId);
+      appendError(viaVoice);
+      return;
     }
+    const done = chatHolder.value;
+    dispatchTrace(done.trace, done);
+    setRedFlag(done.red_flag);
+    // Only speak the reply when the user asked by voice. On no-Urdu-voice
+    // devices the reply is Roman Urdu, spoken with the English voice.
+    sayReply(done.reply, viaVoice, replySpeakLang);
   };
 
-  // ── Action chip: read the prescription ─────────────────────────────────────
+  // ── Voice message: voice in → voice out (no visible text) ─────────────────
+  //
+  // The recorder gives us the user's audio (for playback) + a transcript. The
+  // transcript goes to the text-only model but is NEVER shown; the reply comes
+  // back as an auto-playing voice bubble, also with no visible text.
+
+  const sendVoice = async (capture: {
+    transcript: string;
+    audioUrl: string | null;
+    durationMs: number;
+  }) => {
+    const transcript = capture.transcript.trim();
+    if (busy || !transcript) return;
+    initAudio();
+    cancelSpeaking();
+
+    const userVoice: VoiceMsg = {
+      id: nextId(),
+      kind: "voice",
+      role: "user",
+      audioUrl: capture.audioUrl,
+      text: transcript,
+      durationMs: capture.durationMs,
+    };
+    const history = buildHistory([{ role: "user", content: transcript }]);
+    append(userVoice);
+    setBusy(true);
+    setBusyLabel(ur ? "جواب تیار ہو رہا ہے…" : "Preparing a reply…");
+
+    const body: ChatApiRequest = { messages: history, language: lang };
+    const holder: { value: ChatApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/chat",
+      body,
+      {
+        onDone: (payload) => {
+          holder.value = payload as unknown as ChatApiResponse;
+        },
+        onError: () => {
+          holder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setBusyLabel(null);
+
+    if (holder.failed || !holder.value) {
+      const errText = ur
+        ? "معذرت، جواب نہیں مل سکا۔ دوبارہ کوشش کریں۔"
+        : "Sorry, I could not get a reply. Please try again.";
+      append({
+        id: nextId(),
+        kind: "voice",
+        role: "assistant",
+        text: errText,
+        autoPlay: true,
+      });
+      return;
+    }
+    const done = holder.value;
+    dispatchTrace(done.trace, done);
+    setRedFlag(done.red_flag);
+    append({
+      id: nextId(),
+      kind: "voice",
+      role: "assistant",
+      text: done.reply,
+      autoPlay: true,
+    });
+  };
+
+  // ── Action chip: read the prescription (streaming with staged timeline) ──
 
   const doExtract = async () => {
     const img = attachment;
     if (busy || !img) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
-    try {
-      const body: ExtractApiRequest = { image: img.full };
-      const res = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`extract ${res.status}`);
-      const data = (await res.json()) as ExtractApiResponse;
-      dispatchTrace(data.trace, data);
-      append({ id: nextId(), kind: "extract", data, photo: img.full });
-    } catch {
-      appendError();
-    } finally {
-      setBusy(false);
+    setBusyLabel(null); // The timeline replaces the single-line label for extract.
+    setExtractStage("prep");
+
+    const extractHolder: { value: ExtractApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/extract",
+      { image: img.full },
+      {
+        onProgress: (stage) => setExtractStage(stage as ProgressStage),
+        onDone: (payload) => {
+          extractHolder.value = payload as unknown as ExtractApiResponse;
+        },
+        onError: () => {
+          extractHolder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setExtractStage(null);
+
+    if (extractHolder.failed || !extractHolder.value) {
+      appendError(false);
+      return;
     }
+    const done = extractHolder.value;
+    dispatchTrace(done.trace, done);
+    if (done.result.medicines.length === 0) {
+      const text = ur
+        ? "تصویر سے کوئی دوا نہیں پڑھی جا سکی۔ برائے مہربانی صاف تصویر لیں۔"
+        : "Could not read any medicines from the image. Please try a clearer photo.";
+      append({ id: nextId(), kind: "chat", role: "assistant", text });
+      return;
+    }
+    append({ id: nextId(), kind: "extract", data: done, photo: img.full });
   };
 
   // ── Action chip: verify a medicine box ─────────────────────────────────────
@@ -221,7 +540,7 @@ export default function ChatPage() {
     const img = attachment;
     if (busy || !img) return;
     initAudio();
-    stopSpeaking();
+    cancelSpeaking();
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_check_box"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
@@ -252,9 +571,8 @@ export default function ChatPage() {
       }
       const text = lines.filter(Boolean).join("\n");
       append({ id: nextId(), kind: "chat", role: "assistant", text });
-      sayReply(text);
     } catch {
-      appendError();
+      appendError(false);
     } finally {
       setBusy(false);
     }
@@ -272,7 +590,6 @@ export default function ChatPage() {
       { id: nextId(), kind: "chat", role: "assistant", text },
       { id: nextId(), kind: "alarms_link" }
     );
-    if (!mutedRef.current) void speak(text, lang).catch(() => {});
   };
 
   const onRetake = (reviewMsgId: string) => () => {
@@ -286,14 +603,6 @@ export default function ChatPage() {
   const urduFont = ur ? "font-urdu leading-loose" : "";
   const chipCls =
     "flex min-h-14 items-center gap-2 rounded-full border-2 border-emerald-200 bg-white px-5 text-lg font-bold text-emerald-800 shadow-sm transition-transform active:scale-95";
-
-  const toggleMute = () => {
-    setMuted((m) => {
-      const next = !m;
-      if (next) stopSpeaking();
-      return next;
-    });
-  };
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col">
@@ -309,17 +618,6 @@ export default function ChatPage() {
         <h1 className={`flex-1 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
           💬 {t("home_chat")}
         </h1>
-        <button
-          type="button"
-          onClick={toggleMute}
-          aria-pressed={muted}
-          aria-label={muted ? "unmute" : "mute"}
-          className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-2xl transition-colors ${
-            muted ? "bg-stone-200 text-stone-500" : "bg-emerald-100 text-emerald-700"
-          }`}
-        >
-          <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
-        </button>
         <LanguageToggle />
       </header>
 
@@ -343,7 +641,28 @@ export default function ChatPage() {
 
         {messages.map((m) => {
           if (m.kind === "chat") {
-            return <ChatMessage key={m.id} role={m.role} text={m.text} image={m.image} />;
+            return (
+              <ChatMessage
+                key={m.id}
+                role={m.role}
+                text={m.text}
+                image={m.image}
+                viaVoice={m.viaVoice}
+              />
+            );
+          }
+          if (m.kind === "voice") {
+            return (
+              <VoiceMessage
+                key={m.id}
+                role={m.role}
+                audioUrl={m.audioUrl}
+                text={m.text}
+                lang={lang}
+                durationMs={m.durationMs}
+                autoPlay={m.autoPlay}
+              />
+            );
           }
           if (m.kind === "extract") {
             return (
@@ -367,8 +686,23 @@ export default function ChatPage() {
           );
         })}
 
-        {/* Thinking skeleton */}
-        {busy ? (
+        {/* Extract timeline — shown while /api/extract is running. Each row
+            transitions pending → running → done as SSE progress events land,
+            just like Claude's "reading / searching / responding" pill list. */}
+        {extractStage !== null ? (
+          <div className="flex justify-start">
+            <div className="w-full max-w-[85%] rounded-2xl rounded-ss-md border border-stone-100 bg-white p-3 shadow-sm">
+              <p className={`mb-2 text-sm font-bold text-stone-500 ${urduFont}`} dir="auto">
+                {ur ? "نسخہ پڑھا جا رہا ہے…" : "Reading your prescription…"}
+              </p>
+              <ProgressTimeline currentStage={extractStage} />
+            </div>
+          </div>
+        ) : null}
+
+        {/* Chat-reply skeleton — only visible for the ~1s before the first
+            token lands. Never shown when the extract timeline is up. */}
+        {busy && busyLabel && extractStage === null ? (
           <div className="flex justify-start">
             <div className="flex items-center gap-3 rounded-2xl rounded-ss-md border border-stone-100 bg-white px-4 py-3 shadow-sm">
               <span className="flex gap-1" aria-hidden="true">
@@ -377,9 +711,29 @@ export default function ChatPage() {
                 <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-400 [animation-delay:300ms]" />
               </span>
               <span className={`text-lg text-stone-500 ${urduFont}`} dir="auto">
-                {t("chat_thinking")}
+                {busyLabel}
               </span>
             </div>
+          </div>
+        ) : null}
+
+        {/* Speaking indicator — appears while the phone is reading the voice
+            reply aloud. Tap to interrupt. */}
+        {speaking ? (
+          <div className="flex justify-start">
+            <button
+              type="button"
+              onClick={cancelSpeaking}
+              className={`flex items-center gap-3 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-emerald-800 shadow-sm transition-transform active:scale-95 ${urduFont}`}
+              dir="auto"
+            >
+              <span aria-hidden="true" className="animate-pulse text-xl leading-none">
+                🔊
+              </span>
+              <span className="text-sm font-bold">
+                {ur ? "بولا جا رہا ہے — روکنے کے لیے دبائیں" : "Speaking — tap to stop"}
+              </span>
+            </button>
           </div>
         ) : null}
         <div ref={bottomRef} />
@@ -468,12 +822,8 @@ export default function ChatPage() {
             className={`h-16 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
           />
 
-          <MicButton
-            onResult={(text) => {
-              setInput("");
-              void sendChat(text);
-            }}
-            onInterim={(s) => setInput(s)}
+          <VoiceRecordButton
+            onRecorded={(capture) => void sendVoice(capture)}
             disabled={busy}
           />
 
