@@ -5,24 +5,17 @@ import { useEffect, useRef, useState } from "react";
 import {
   EVT_TRACE,
   SS_CHAT,
-  type Alarm,
   type ChatApiRequest,
   type ChatApiResponse,
-  type ExtractApiResponse,
   type PipelineTrace,
-  type VerifyApiRequest,
-  type VerifyResult,
 } from "@/lib/schema";
 import { useLang } from "@/lib/i18n";
 import { hasUrduCapableVoice, initAudio, speak, stopSpeaking } from "@/lib/speech";
-import { loadAlarms, saveAlarm } from "@/lib/alarms";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
 import { streamJson } from "@/lib/streamClient";
 import { CaptureOrUpload } from "@/components/CaptureOrUpload";
 import { ChatMessage } from "@/components/ChatMessage";
-import { ExtractReview } from "@/components/ExtractReview";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { ProgressTimeline, type ProgressStage } from "@/components/ProgressTimeline";
 import RedFlagBanner from "@/components/RedFlagBanner";
 import { VoiceMessage } from "@/components/VoiceMessage";
 import { VoiceRecordButton } from "@/components/VoiceRecordButton";
@@ -40,12 +33,6 @@ interface ChatMsg {
    * the reply should be spoken aloud. */
   viaVoice?: boolean;
 }
-interface ExtractMsg {
-  id: string;
-  kind: "extract";
-  data: ExtractApiResponse;
-  photo: string | null;
-}
 interface AlarmsLinkMsg {
   id: string;
   kind: "alarms_link";
@@ -59,7 +46,7 @@ interface VoiceMsg {
   durationMs?: number;
   autoPlay?: boolean;
 }
-type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg | VoiceMsg;
+type Msg = ChatMsg | AlarmsLinkMsg | VoiceMsg;
 
 interface Attachment {
   full: string; // preprocessed image sent to the API + stored with alarms
@@ -138,7 +125,6 @@ export default function ChatPage() {
   const [attachBusy, setAttachBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [extractStage, setExtractStage] = useState<ProgressStage | null>(null);
   const [redFlag, setRedFlag] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -321,7 +307,11 @@ export default function ChatPage() {
     initAudio();
     cancelSpeaking();
 
-    const content = text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
+    // Image with no typed instruction: send a neutral marker so the model
+    // (guided by CHAT_SYSTEM) identifies the document and asks what to do,
+    // instead of dumping a full analysis.
+    const content =
+      text || (ur ? "میں نے یہ دستاویز بھیجی ہے۔" : "I've attached this document.");
     const userMsg: ChatMsg = {
       id: nextId(),
       kind: "chat",
@@ -483,126 +473,9 @@ export default function ChatPage() {
     });
   };
 
-  // ── Action chip: read the prescription (streaming with staged timeline) ──
-
-  const doExtract = async () => {
-    const img = attachment;
-    if (busy || !img) return;
-    initAudio();
-    cancelSpeaking();
-    append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
-    setAttachment(null);
-    setBusy(true);
-    setBusyLabel(null); // The timeline replaces the single-line label for extract.
-    setExtractStage("prep");
-
-    const extractHolder: { value: ExtractApiResponse | null; failed: boolean } = {
-      value: null,
-      failed: false,
-    };
-
-    await streamJson(
-      "/api/extract",
-      { image: img.full },
-      {
-        onProgress: (stage) => setExtractStage(stage as ProgressStage),
-        onDone: (payload) => {
-          extractHolder.value = payload as unknown as ExtractApiResponse;
-        },
-        onError: () => {
-          extractHolder.failed = true;
-        },
-      },
-    );
-
-    setBusy(false);
-    setExtractStage(null);
-
-    if (extractHolder.failed || !extractHolder.value) {
-      appendError(false);
-      return;
-    }
-    const done = extractHolder.value;
-    dispatchTrace(done.trace, done);
-    if (done.result.medicines.length === 0) {
-      const text = ur
-        ? "تصویر سے کوئی دوا نہیں پڑھی جا سکی۔ برائے مہربانی صاف تصویر لیں۔"
-        : "Could not read any medicines from the image. Please try a clearer photo.";
-      append({ id: nextId(), kind: "chat", role: "assistant", text });
-      return;
-    }
-    append({ id: nextId(), kind: "extract", data: done, photo: img.full });
-  };
-
-  // ── Action chip: verify a medicine box ─────────────────────────────────────
-
-  const doVerify = async () => {
-    const img = attachment;
-    if (busy || !img) return;
-    initAudio();
-    cancelSpeaking();
-    append({ id: nextId(), kind: "chat", role: "user", text: t("action_check_box"), image: img.thumb });
-    setAttachment(null);
-    setBusy(true);
-    try {
-      const body: VerifyApiRequest = {
-        image: img.full,
-        medicines: loadAlarms().map((a) => ({ brand_name: a.medicine_name, salt: a.salt })),
-      };
-      const res = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`verify ${res.status}`);
-      const data = (await res.json()) as VerifyResult & { trace: PipelineTrace };
-      dispatchTrace(data.trace, data);
-
-      const status =
-        data.match === true
-          ? `✅ ${t("verify_match")}`
-          : data.match === false
-            ? `❌ ${t("verify_mismatch")}`
-            : `❓ ${t("verify_unsure")}`;
-      const lines = [status, ur ? data.explanation_ur : data.explanation_en];
-      if (data.expired) lines.push(`⛔ ${t("expired_warning")}`);
-      else if (data.expiry_date) {
-        lines.push(ur ? `میعاد: ${data.expiry_date}` : `Expiry: ${data.expiry_date}`);
-      }
-      const text = lines.filter(Boolean).join("\n");
-      append({ id: nextId(), kind: "chat", role: "assistant", text });
-    } catch {
-      appendError(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // ── ExtractReview outcomes ─────────────────────────────────────────────────
-
-  const onConfirmed = (reviewMsgId: string) => (alarms: Alarm[]) => {
-    for (const a of alarms) saveAlarm(a);
-    removeMsg(reviewMsgId);
-    const text = ur
-      ? `بہت خوب! ${alarms.length > 1 ? `${alarms.length} دواؤں کے` : "دوا کے"} الارم بن گئے ہیں۔ وقت پر گھنٹی بجے گی اور دوا کی تصویر نظر آئے گی۔`
-      : `Done! ${alarms.length > 1 ? `Alarms for ${alarms.length} medicines are set.` : "Your medicine alarm is set."} It will ring on time and show the medicine photo.`;
-    append(
-      { id: nextId(), kind: "chat", role: "assistant", text },
-      { id: nextId(), kind: "alarms_link" }
-    );
-  };
-
-  const onRetake = (reviewMsgId: string) => () => {
-    removeMsg(reviewMsgId);
-    setShowPicker(true);
-  };
-
   // ── UI bits ────────────────────────────────────────────────────────────────
 
-  const showChips = attachment !== null && input.trim() === "" && !busy;
   const urduFont = ur ? "font-urdu leading-loose" : "";
-  const chipCls =
-    "flex min-h-14 items-center gap-2 rounded-full border-2 border-emerald-200 bg-white px-5 text-lg font-bold text-emerald-800 shadow-sm transition-transform active:scale-95";
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col">
@@ -664,17 +537,6 @@ export default function ChatPage() {
               />
             );
           }
-          if (m.kind === "extract") {
-            return (
-              <ExtractReview
-                key={m.id}
-                data={m.data}
-                photo={m.photo}
-                onConfirmed={onConfirmed(m.id)}
-                onRetake={onRetake(m.id)}
-              />
-            );
-          }
           return (
             <Link
               key={m.id}
@@ -686,23 +548,9 @@ export default function ChatPage() {
           );
         })}
 
-        {/* Extract timeline — shown while /api/extract is running. Each row
-            transitions pending → running → done as SSE progress events land,
-            just like Claude's "reading / searching / responding" pill list. */}
-        {extractStage !== null ? (
-          <div className="flex justify-start">
-            <div className="w-full max-w-[85%] rounded-2xl rounded-ss-md border border-stone-100 bg-white p-3 shadow-sm">
-              <p className={`mb-2 text-sm font-bold text-stone-500 ${urduFont}`} dir="auto">
-                {ur ? "نسخہ پڑھا جا رہا ہے…" : "Reading your prescription…"}
-              </p>
-              <ProgressTimeline currentStage={extractStage} />
-            </div>
-          </div>
-        ) : null}
-
         {/* Chat-reply skeleton — only visible for the ~1s before the first
-            token lands. Never shown when the extract timeline is up. */}
-        {busy && busyLabel && extractStage === null ? (
+            token lands. */}
+        {busy && busyLabel ? (
           <div className="flex justify-start">
             <div className="flex items-center gap-3 rounded-2xl rounded-ss-md border border-stone-100 bg-white px-4 py-3 shadow-sm">
               <span className="flex gap-1" aria-hidden="true">
@@ -741,55 +589,38 @@ export default function ChatPage() {
 
       {/* Composer */}
       <footer className="border-t border-stone-200 bg-white px-3 pb-3 pt-2">
-        {/* Attached photo preview */}
+        {/* Attached document preview — a small file card, like a chat app.
+            Press send (with or without a question) to submit it. */}
         {attachment ? (
-          <div className="mb-2 flex items-center gap-3">
-            <div className="relative">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={attachment.thumb}
-                alt=""
-                className="h-20 w-20 rounded-xl border-2 border-emerald-200 object-cover"
-              />
-              <button
-                type="button"
-                onClick={() => setAttachment(null)}
-                aria-label={t("cancel")}
-                className="absolute -top-2 -end-2 flex h-8 w-8 items-center justify-center rounded-full bg-stone-700 text-sm text-white shadow"
-              >
-                ✕
-              </button>
-            </div>
-            {showChips ? (
-              <p className={`flex-1 text-base text-stone-500 ${urduFont}`} dir="auto">
-                {ur ? "اب نیچے سے کام چنیں" : "Now pick an action below"}
+          <div className="mb-2 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={attachment.thumb}
+              alt=""
+              className="h-14 w-14 shrink-0 rounded-lg border border-emerald-200 object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <p className={`truncate text-base font-bold text-emerald-900 ${urduFont}`} dir="auto">
+                📎 {ur ? "دستاویز منسلک ہے" : "Document attached"}
               </p>
-            ) : null}
+              <p className={`truncate text-sm text-emerald-700/80 ${urduFont}`} dir="auto">
+                {ur ? "بھیجنے کے لیے تیر دبائیں" : "Press send to submit"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAttachment(null)}
+              aria-label={t("cancel")}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-700 text-sm text-white shadow"
+            >
+              ✕
+            </button>
           </div>
         ) : null}
         {attachBusy ? (
           <p className={`mb-2 animate-pulse text-base text-stone-500 ${urduFont}`} dir="auto">
-            ⏳ {ur ? "تصویر تیار ہو رہی ہے…" : "Preparing the photo…"}
+            ⏳ {ur ? "دستاویز تیار ہو رہی ہے…" : "Preparing the document…"}
           </p>
-        ) : null}
-
-        {/* Action chips — shown when an image is attached and nothing typed yet */}
-        {showChips ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            <button type="button" onClick={() => void doExtract()} className={`${chipCls} ${urduFont}`}>
-              📋 {t("action_read_rx")}
-            </button>
-            <button type="button" onClick={() => void doVerify()} className={`${chipCls} ${urduFont}`}>
-              📦 {t("action_check_box")}
-            </button>
-            <button
-              type="button"
-              onClick={() => inputRef.current?.focus()}
-              className={`${chipCls} ${urduFont}`}
-            >
-              💬 {t("action_just_ask")}
-            </button>
-          </div>
         ) : null}
 
         <form
