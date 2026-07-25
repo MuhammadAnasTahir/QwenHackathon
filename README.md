@@ -1,13 +1,26 @@
-# صحت ساتھی — Sehat Saathi
+<p align="center">
+  <img src="Logos/Logo.png" alt="Sehat Saathi logo" width="150" />
+</p>
 
-**An Urdu-first medical assistant for the 40% of Pakistani adults who cannot read the prescription they are handed.**
+<h1 align="center">صحت ساتھی — Sehat Saathi</h1>
+
+<p align="center"><strong>An Urdu-first medical assistant for the 40% of Pakistani adults who cannot read the prescription they are handed.</strong></p>
 
 Photograph a handwritten prescription → hear it explained in spoken Urdu → get medicine alarms that ring with a **photo of the actual box** and an **Urdu voice announcement**. Powered end-to-end by **Qwen 3.7 Plus + Qwen 3.7 Max**.
 
 > Built for the **Qwen AI Buildathon 2026**.
 
-- **Live demo:** https://qwenhackathon-production.up.railway.app/
-- **Demo video:** _link goes here_
+### ▶️ Try it live — scan or click
+
+<p align="center">
+  <a href="https://qwenhackathon-production.up.railway.app/">
+    <img src="Logos/QR.png" alt="Scan to open Sehat Saathi" width="220" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://qwenhackathon-production.up.railway.app/"><strong>qwenhackathon-production.up.railway.app</strong></a>
+</p>
 
 ---
 
