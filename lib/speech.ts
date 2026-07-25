@@ -337,13 +337,51 @@ function getVoices(): Promise<SpeechSynthesisVoice[]> {
   });
 }
 
+/**
+ * Pick the best TTS voice for the requested language, with cascading fallbacks.
+ *
+ * For Urdu specifically: Android/iOS ship a Urdu voice; Windows Chrome usually
+ * does NOT. Rather than silently reading Urdu script with an English voice
+ * (which produces garbage or silence), we cascade:
+ *
+ *   1. Any voice with `lang` beginning "ur"   — the ideal case
+ *   2. Any voice with `lang` beginning "ar"   — Arabic voices READ Urdu script
+ *        intelligibly (Urdu is Arabic script + a few extra letters); native
+ *        Urdu speakers understand ~85% of what an Arabic voice reads back
+ *   3. Anything Persian / Farsi (`fa`)        — same script family
+ *   4. null — caller sets utter.lang="ur-PK" and hopes the system picks
+ *        something reasonable
+ *
+ * Log-once helps demo debugging: user can open DevTools and see WHICH voice
+ * was picked for Urdu on their laptop.
+ */
+let voiceLogged = false;
+
 function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisVoice | null {
+  const pool = voices;
+  const lc = (v: SpeechSynthesisVoice) => v.lang.toLowerCase();
+
   if (lang === "ur") {
-    return voices.find((v) => v.lang.toLowerCase().startsWith("ur")) ?? null;
+    // Prefer any Urdu voice, then Arabic (script-compatible), then Persian.
+    const picked =
+      pool.find((v) => lc(v).startsWith("ur")) ??
+      pool.find((v) => lc(v).startsWith("ar")) ??
+      pool.find((v) => lc(v).startsWith("fa")) ??
+      null;
+    if (!voiceLogged && typeof console !== "undefined") {
+      voiceLogged = true;
+      const inventory = pool.map((v) => `${v.name} [${v.lang}]`).join(", ");
+      // eslint-disable-next-line no-console
+      console.info(
+        `[Sehat Saathi TTS] Urdu voice picked: ${picked ? `${picked.name} [${picked.lang}]` : "NONE (falling back to ur-PK hint)"}. Voices available: ${inventory || "(none)"}`,
+      );
+    }
+    return picked;
   }
+
   return (
-    voices.find((v) => v.lang.toLowerCase().startsWith("en-")) ??
-    voices.find((v) => v.lang.toLowerCase().startsWith("en")) ??
+    pool.find((v) => lc(v).startsWith("en-")) ??
+    pool.find((v) => lc(v).startsWith("en")) ??
     null
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   EVT_TRACE,
+  SS_CHAT,
   type Alarm,
   type ChatApiRequest,
   type ChatApiResponse,
@@ -97,6 +98,55 @@ export default function ChatPage() {
     // Leaving the chat should never leave speech running.
     return () => stopSpeaking();
   }, []);
+
+  // ── Chat history: sessionStorage (per-tab, cleared when tab closes) ──────
+  //
+  // - Hydrate on mount so navigating away to /alarms and back keeps the
+  //   conversation visible.
+  // - Save on every messages change.
+  // - Strip image data URLs before saving (they're huge — sessionStorage
+  //   quota is small) and drop the ExtractReview messages since they're a
+  //   transient UX step (the review is either confirmed → alarms saved, or
+  //   discarded → gone; either way there's nothing to restore).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.sessionStorage.getItem(SS_CHAT);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      // Trust structurally but filter to known kinds.
+      const restored: Msg[] = parsed.filter(
+        (m: unknown): m is Msg =>
+          m !== null &&
+          typeof m === "object" &&
+          "kind" in m &&
+          ((m as Msg).kind === "chat" || (m as Msg).kind === "alarms_link"),
+      );
+      if (restored.length > 0) setMessages(restored);
+    } catch {
+      // Corrupt storage — drop it silently.
+    }
+    // Only hydrate once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const serializable = messages
+        .filter((m) => m.kind === "chat" || m.kind === "alarms_link")
+        .map((m) => {
+          if (m.kind !== "chat") return m;
+          // Drop the image data URL — too big for sessionStorage quota and
+          // not useful to see in a restored session.
+          return { ...m, image: null };
+        });
+      window.sessionStorage.setItem(SS_CHAT, JSON.stringify(serializable));
+    } catch {
+      // Quota exceeded / private mode / etc. — best-effort.
+    }
+  }, [messages]);
 
   const append = (...items: Msg[]) => setMessages((prev) => [...prev, ...items]);
   const removeMsg = (id: string) => setMessages((prev) => prev.filter((m) => m.id !== id));

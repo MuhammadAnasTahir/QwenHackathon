@@ -175,3 +175,7 @@ export const EVT_TRACE = "ss:trace"; // detail: PipelineTrace (DevPanel listens)
 export const LS_ALARMS = "ss_alarms";
 export const LS_LANG = "ss_lang";
 export const LS_FIRED = "ss_fired"; // { [alarmId_date_time]: true }
+
+// Chat history persists to sessionStorage (per-tab, auto-cleared when the
+// tab closes). Bumping the suffix invalidates old shapes on schema changes.
+export const SS_CHAT = "ss_chat_v1";
