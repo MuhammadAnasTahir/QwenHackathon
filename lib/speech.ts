@@ -578,8 +578,33 @@ function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisV
 }
 
 /**
+ * Ask the server to transliterate Urdu script → Roman Urdu. Returns null on
+ * any failure so the caller can fall back gracefully.
+ */
+async function transliterateToRoman(text: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/translit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    const roman = (data as { roman?: unknown })?.roman;
+    return typeof roman === "string" && roman.trim() ? roman.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Speak `text` aloud; resolves when speech finishes (or immediately if TTS
  * is unavailable). Any speech already in progress is cancelled first.
+ *
+ * Urdu fallback: if the device has NO Urdu/Arabic/Persian voice (common on
+ * Windows laptops — the reason Urdu replies were silent there), we transliterate
+ * the text to Roman Urdu and speak it with an English voice, which every device
+ * has. On phones with a real Urdu voice, the native voice is used directly.
  */
 export async function speak(text: string, lang: Lang): Promise<void> {
   if (!ttsAvailable() || !text.trim()) return;
@@ -587,15 +612,27 @@ export async function speak(text: string, lang: Lang): Promise<void> {
   synth.cancel();
 
   const voices = await getVoices();
-  const voice = pickVoice(voices, lang);
+  let voice = pickVoice(voices, lang);
+  let speakText = text;
+  let langHint = lang === "ur" ? "ur-PK" : "en-US";
 
-  const utter = new SpeechSynthesisUtterance(text);
+  if (lang === "ur" && !voice) {
+    // No Urdu-capable voice on this device. Transliterate and speak with English.
+    const roman = await transliterateToRoman(text);
+    if (roman) {
+      speakText = roman;
+      voice = pickVoice(voices, "en");
+      langHint = "en-US";
+    }
+  }
+
+  const utter = new SpeechSynthesisUtterance(speakText);
   if (voice) {
     utter.voice = voice;
     utter.lang = voice.lang;
   } else {
-    // No matching voice installed — set the lang hint and try anyway.
-    utter.lang = lang === "ur" ? "ur-PK" : "en-US";
+    // Still no matching voice — set the lang hint and try anyway.
+    utter.lang = langHint;
   }
   utter.rate = 0.95;
 
