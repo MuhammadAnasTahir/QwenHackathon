@@ -20,10 +20,11 @@ import { Buffer } from "node:buffer";
 const BASE_URL = (process.env.REDUCTO_BASE_URL ?? "https://platform.reducto.ai").replace(/\/+$/, "");
 const API_KEY = process.env.REDUCTO_API_KEY ?? "";
 
-// Reducto is fast for images and typical prescription PDFs, but we still cap
-// each network hop so a hung request cannot stall the whole /api/extract call.
-const UPLOAD_TIMEOUT_MS = 30_000;
-const PARSE_TIMEOUT_MS = 60_000;
+// Reducto is best-effort. Tight timeouts keep the demo snappy: if Reducto is
+// slow, we drop it and Qwen Plus reads the image alone rather than making the
+// user wait. Users who want fewer skips can raise these via env vars.
+const UPLOAD_TIMEOUT_MS = Number(process.env.REDUCTO_UPLOAD_TIMEOUT_MS ?? 10_000);
+const PARSE_TIMEOUT_MS = Number(process.env.REDUCTO_PARSE_TIMEOUT_MS ?? 20_000);
 const MAX_TEXT_CHARS = 8_000; // more than enough for a full prescription
 
 export interface ReductoResult {

@@ -1,20 +1,20 @@
-// POST /api/extract — prescription photo → structured medicines.
+// POST /api/extract — prescription photo / PDF-page → structured medicines.
 //
-// Pipeline (best-quality path):
-//   1) Reducto OCR pass (image or PDF → clean layout-preserved text)
-//   2) N parallel Qwen 3.7 Plus reads (self-consistency @ temp 0.3) —
-//      each read gets BOTH the raw image AND the Reducto OCR text as
-//      auxiliary context. Vision-language models are measurably more
-//      accurate when handed a good OCR pass alongside the pixels.
-//   3) Majority vote across the N runs
-//   4) Qwen 3.7 Max grounding + safety pass (best-effort)
+// Streaming SSE response. Frames:
+//   { type: "progress", stage: "prep"|"ocr"|"vision"|"vote"|"safety", label }
+//   { type: "done", result, safety, runs_raw, trace }
+//   { type: "error", message }
 //
-// Reducto is treated as best-effort: if it is unconfigured, times out, or
-// errors, we skip it and Plus reads the image alone. The rest of the pipeline
-// is unchanged. This keeps the app robust while adding real accuracy gains
-// on the paths where Reducto helps most (PDFs, printed labels).
+// Pipeline:
+//   1) Reducto OCR (best-effort, tight timeouts)
+//   2) N Qwen 3.7 Plus reads (default N=1 for demo latency; up to 5 for eval).
+//      Each read receives BOTH the raw image AND Reducto's OCR text as
+//      auxiliary context so Plus has a clean text pass alongside the pixels.
+//   3) Self-consistency vote (a no-op when N=1)
+//   4) Qwen 3.7 Max grounding + safety (best-effort)
 //
-// Request: ExtractApiRequest · Response: ExtractApiResponse
+// Reducto is best-effort throughout: unconfigured, timed out, or errored →
+// we skip it and Plus reads the image alone. The rest is unchanged.
 
 import {
   qwen,
@@ -34,14 +34,13 @@ import type {
   PipelineStep,
   SafetyResult,
 } from "@/lib/schema";
+import { sseResponse } from "@/lib/sse";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
-/** Build the user-message content parts for a single Plus extraction run.
- *  When Reducto text is available, it is embedded above the image with a
- *  clear "auxiliary" framing so Plus knows the pixels are still authoritative
- *  when the two disagree. */
+const DEFAULT_RUNS = Number(process.env.EXTRACTION_RUNS ?? 1);
+
 function buildExtractionContent(
   image: string,
   ocrText: string | null,
@@ -57,7 +56,7 @@ function buildExtractionContent(
   if (ocrText && ocrText.length > 0) {
     parts.push({
       type: "text",
-      text: `AUXILIARY OCR CONTEXT — a document-parsing service (Reducto) already ran on the same file and produced the text below. Use it as a strong hint for spellings and layout, but the PHOTO IS THE AUTHORITY: if the OCR conflicts with what you can clearly see in the image, trust the image and lower the confidence for that field. If the OCR is empty or garbled, ignore it and read the image directly.
+      text: `AUXILIARY OCR CONTEXT — a document-parsing service already ran on the same file and produced the text below. Use it as a strong hint for spellings and layout, but the PHOTO IS THE AUTHORITY: if the OCR conflicts with what you can clearly see in the image, trust the image and lower the confidence for that field. If the OCR is empty or garbled, ignore it and read the image directly.
 --- BEGIN OCR TEXT ---
 ${ocrText}
 --- END OCR TEXT ---
@@ -76,42 +75,50 @@ Now read the actual prescription photo below and return ONLY the JSON object.`,
 }
 
 export async function POST(req: Request) {
-  const trace: PipelineStep[] = [];
-  try {
-    const raw: unknown = await req.json().catch(() => null);
-    const body = (typeof raw === "object" && raw !== null ? raw : {}) as {
-      image?: unknown;
-      runs?: unknown;
-    };
+  const raw: unknown = await req.json().catch(() => null);
+  const body = (typeof raw === "object" && raw !== null ? raw : {}) as {
+    image?: unknown;
+    runs?: unknown;
+  };
 
-    const image =
-      typeof body.image === "string" && body.image.startsWith("data:") ? body.image : null;
-    if (!image) {
-      return Response.json({ error: "image_required" }, { status: 400 });
-    }
-    const runs = Math.min(
-      5,
-      Math.max(
-        1,
-        typeof body.runs === "number" && Number.isFinite(body.runs) ? Math.round(body.runs) : 3,
-      ),
-    );
+  const image =
+    typeof body.image === "string" && body.image.startsWith("data:") ? body.image : null;
+  if (!image) {
+    return Response.json({ error: "image_required" }, { status: 400 });
+  }
+  const runs = Math.min(
+    5,
+    Math.max(
+      1,
+      typeof body.runs === "number" && Number.isFinite(body.runs) ? Math.round(body.runs) : DEFAULT_RUNS,
+    ),
+  );
 
-    // ── Step 1: Reducto OCR pass (best-effort) ────────────────────────────────
+  return sseResponse(async (send) => {
+    const trace: PipelineStep[] = [];
+
+    // Stage: prep — client already downscaled, this is just an entry marker.
+    send({ type: "progress", stage: "prep", label: "Preparing image…" });
+
+    // Stage: ocr (best-effort)
     let ocrText: string | null = null;
     if (reductoConfigured()) {
+      send({ type: "progress", stage: "ocr", label: "Reading document…" });
       const reductoResult = await timed(
         "reducto OCR",
         "reducto",
         () => tryParseWithReducto(image),
         trace,
       );
-      if (reductoResult && reductoResult.text) {
-        ocrText = reductoResult.text;
-      }
+      if (reductoResult && reductoResult.text) ocrText = reductoResult.text;
     }
 
-    // ── Step 2: N parallel Plus extraction runs (with OCR context if we have it) ─
+    // Stage: vision — N parallel Plus extraction runs.
+    send({
+      type: "progress",
+      stage: "vision",
+      label: runs > 1 ? `Extracting medicines (×${runs})…` : "Extracting medicines…",
+    });
     const settled = await Promise.allSettled(
       Array.from({ length: runs }, (_, i) =>
         timed(
@@ -123,10 +130,7 @@ export async function POST(req: Request) {
               temperature: 0.3,
               messages: [
                 { role: "system", content: EXTRACTION_PROMPT },
-                {
-                  role: "user",
-                  content: buildExtractionContent(image, ocrText),
-                },
+                { role: "user", content: buildExtractionContent(image, ocrText) },
               ],
             });
             return coerceExtraction(
@@ -142,17 +146,23 @@ export async function POST(req: Request) {
       .filter((s): s is PromiseFulfilledResult<ExtractionResult> => s.status === "fulfilled")
       .map((s) => s.value);
     if (runsRaw.length === 0) {
-      return Response.json({ error: "extraction_failed" }, { status: 502 });
+      send({ type: "error", message: "extraction_failed" });
+      return;
     }
 
-    // ── Step 3: Majority vote across runs ────────────────────────────────────
+    // Stage: vote — a no-op when runs === 1, still emit the frame so the UI
+    // can flick through the step. Silent when only one run.
+    if (runsRaw.length > 1) {
+      send({ type: "progress", stage: "vote", label: "Cross-checking readings…" });
+    }
     const voteStart = Date.now();
     const voted = voteExtractions(runsRaw);
     trace.push({ model: "server", label: "self-consistency vote", ms: Date.now() - voteStart });
 
-    // ── Step 4: Max grounding pass (best-effort) ─────────────────────────────
+    // Stage: safety — Max grounding (best-effort).
     let safety: SafetyResult | null = null;
     if (voted.medicines.length > 0) {
+      send({ type: "progress", stage: "safety", label: "Checking for safety issues…" });
       try {
         safety = await timed(
           "medical grounding + safety",
@@ -174,14 +184,12 @@ export async function POST(req: Request) {
       }
     }
 
-    const res: ExtractApiResponse = {
+    const done: ExtractApiResponse = {
       result: voted,
       safety,
       runs_raw: runsRaw,
       trace: { steps: trace },
     };
-    return Response.json(res);
-  } catch {
-    return Response.json({ error: "extraction_failed" }, { status: 500 });
-  }
+    send({ type: "done", ...done } as unknown as import("@/lib/sse").SseEvent);
+  });
 }

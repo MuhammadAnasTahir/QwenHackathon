@@ -7,7 +7,6 @@ import {
   type Alarm,
   type ChatApiRequest,
   type ChatApiResponse,
-  type ExtractApiRequest,
   type ExtractApiResponse,
   type PipelineTrace,
   type VerifyApiRequest,
@@ -17,6 +16,7 @@ import { useLang } from "@/lib/i18n";
 import { initAudio, speak, stopSpeaking } from "@/lib/speech";
 import { loadAlarms, saveAlarm } from "@/lib/alarms";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
+import { streamJson } from "@/lib/streamClient";
 import { CaptureOrUpload } from "@/components/CaptureOrUpload";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ExtractReview } from "@/components/ExtractReview";
@@ -72,6 +72,7 @@ export default function ChatPage() {
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachBusy, setAttachBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [redFlag, setRedFlag] = useState(false);
   const [muted, setMuted] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -98,6 +99,12 @@ export default function ChatPage() {
 
   const append = (...items: Msg[]) => setMessages((prev) => [...prev, ...items]);
   const removeMsg = (id: string) => setMessages((prev) => prev.filter((m) => m.id !== id));
+  const appendTokenTo = (id: string, chunk: string) =>
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.kind === "chat" && m.id === id ? { ...m, text: m.text + chunk } : m,
+      ),
+    );
 
   const sayReply = (text: string) => {
     if (!mutedRef.current) void speak(text, lang).catch(() => {});
@@ -120,7 +127,7 @@ export default function ChatPage() {
     try {
       const raw =
         f.type === "application/pdf" ? await pdfFirstPageToDataUrl(f) : await fileToDataUrl(f);
-      const full = await preprocess(raw, { maxDim: 1600 });
+      const full = await preprocess(raw, { maxDim: 1200 });
       const thumb = await thumbnail(full);
       setAttachment({ full, thumb });
     } catch {
@@ -130,7 +137,11 @@ export default function ChatPage() {
     }
   };
 
-  // ── Normal chat send ───────────────────────────────────────────────────────
+  // ── Normal chat send (streaming) ──────────────────────────────────────────
+  //
+  // We create an EMPTY assistant message immediately, then append tokens to
+  // it as they stream in. The user sees words appearing within ~1s instead of
+  // staring at a spinner for the full model latency.
 
   const sendChat = async (rawText: string) => {
     const text = rawText.trim();
@@ -148,7 +159,6 @@ export default function ChatPage() {
       image: img?.thumb ?? null,
     };
 
-    // Full history (chat messages only), with a placeholder for image-only turns.
     const history: ChatApiRequest["messages"] = [
       ...messages
         .filter((m): m is ChatMsg => m.kind === "chat")
@@ -159,35 +169,93 @@ export default function ChatPage() {
       { role: "user" as const, content },
     ];
 
-    append(userMsg);
+    const replyId = nextId();
+    append(userMsg, { id: replyId, kind: "chat", role: "assistant", text: "" });
     setInput("");
     setAttachment(null);
     setBusy(true);
-    try {
-      const body: ChatApiRequest = {
-        messages: history,
-        images: img ? [img.full] : undefined,
-        language: lang,
-      };
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`chat ${res.status}`);
-      const data = (await res.json()) as ChatApiResponse;
-      dispatchTrace(data.trace, data);
-      setRedFlag(data.red_flag);
-      append({ id: nextId(), kind: "chat", role: "assistant", text: data.reply });
-      sayReply(data.reply);
-    } catch {
+    setBusyLabel(ur ? "سوچ رہا ہوں…" : "Thinking…");
+
+    const body: ChatApiRequest = {
+      messages: history,
+      images: img ? [img.full] : undefined,
+      language: lang,
+    };
+
+    // Closure-mutated holders (TS won't narrow bare `let`s across an await).
+    const chatHolder: { value: ChatApiResponse | null; gotAnything: boolean; failed: boolean } = {
+      value: null,
+      gotAnything: false,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/chat",
+      body,
+      {
+        onToken: (chunk) => {
+          chatHolder.gotAnything = true;
+          setBusyLabel(null);
+          appendTokenTo(replyId, chunk);
+        },
+        onDone: (payload) => {
+          chatHolder.value = payload as unknown as ChatApiResponse;
+        },
+        onError: () => {
+          chatHolder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setBusyLabel(null);
+
+    if (chatHolder.failed || !chatHolder.gotAnything || !chatHolder.value) {
+      removeMsg(replyId);
       appendError();
-    } finally {
-      setBusy(false);
+      return;
     }
+    const done = chatHolder.value;
+    dispatchTrace(done.trace, done);
+    setRedFlag(done.red_flag);
+    // Speech only makes sense on the final full text.
+    sayReply(done.reply);
   };
 
-  // ── Action chip: read the prescription ─────────────────────────────────────
+  // ── Action chip: read the prescription (streaming with staged progress) ───
+
+  const extractStageLabel = (stage: string): string => {
+    if (ur) {
+      switch (stage) {
+        case "prep":
+          return "تصویر تیار کی جا رہی ہے…";
+        case "ocr":
+          return "دستاویز پڑھی جا رہی ہے…";
+        case "vision":
+          return "دوائیں نکالی جا رہی ہیں…";
+        case "vote":
+          return "تصدیق کی جا رہی ہے…";
+        case "safety":
+          return "حفاظت کی جانچ ہو رہی ہے…";
+        default:
+          return "چل رہا ہے…";
+      }
+    }
+    switch (stage) {
+      case "prep":
+        return "Preparing image…";
+      case "ocr":
+        return "Reading document…";
+      case "vision":
+        return "Extracting medicines…";
+      case "vote":
+        return "Cross-checking readings…";
+      case "safety":
+        return "Checking for safety issues…";
+      default:
+        return "Working…";
+    }
+  };
 
   const doExtract = async () => {
     const img = attachment;
@@ -197,22 +265,45 @@ export default function ChatPage() {
     append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
     setAttachment(null);
     setBusy(true);
-    try {
-      const body: ExtractApiRequest = { image: img.full };
-      const res = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`extract ${res.status}`);
-      const data = (await res.json()) as ExtractApiResponse;
-      dispatchTrace(data.trace, data);
-      append({ id: nextId(), kind: "extract", data, photo: img.full });
-    } catch {
+    setBusyLabel(extractStageLabel("prep"));
+
+    const extractHolder: { value: ExtractApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+
+    await streamJson(
+      "/api/extract",
+      { image: img.full },
+      {
+        onProgress: (stage) => setBusyLabel(extractStageLabel(stage)),
+        onDone: (payload) => {
+          extractHolder.value = payload as unknown as ExtractApiResponse;
+        },
+        onError: () => {
+          extractHolder.failed = true;
+        },
+      },
+    );
+
+    setBusy(false);
+    setBusyLabel(null);
+
+    if (extractHolder.failed || !extractHolder.value) {
       appendError();
-    } finally {
-      setBusy(false);
+      return;
     }
+    const done = extractHolder.value;
+    dispatchTrace(done.trace, done);
+    if (done.result.medicines.length === 0) {
+      const text = ur
+        ? "تصویر سے کوئی دوا نہیں پڑھی جا سکی۔ برائے مہربانی صاف تصویر لیں۔"
+        : "Could not read any medicines from the image. Please try a clearer photo.";
+      append({ id: nextId(), kind: "chat", role: "assistant", text });
+      sayReply(text);
+      return;
+    }
+    append({ id: nextId(), kind: "extract", data: done, photo: img.full });
   };
 
   // ── Action chip: verify a medicine box ─────────────────────────────────────
@@ -367,8 +458,11 @@ export default function ChatPage() {
           );
         })}
 
-        {/* Thinking skeleton */}
-        {busy ? (
+        {/* Progress skeleton — only shown while we haven't started streaming
+            tokens yet. Chat streams almost immediately, so this typically
+            appears for < 1s. Extract shows staged labels ("Reading document…"
+            → "Extracting medicines…" → "Checking for safety issues…"). */}
+        {busy && busyLabel ? (
           <div className="flex justify-start">
             <div className="flex items-center gap-3 rounded-2xl rounded-ss-md border border-stone-100 bg-white px-4 py-3 shadow-sm">
               <span className="flex gap-1" aria-hidden="true">
@@ -377,7 +471,7 @@ export default function ChatPage() {
                 <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-400 [animation-delay:300ms]" />
               </span>
               <span className={`text-lg text-stone-500 ${urduFont}`} dir="auto">
-                {t("chat_thinking")}
+                {busyLabel}
               </span>
             </div>
           </div>
