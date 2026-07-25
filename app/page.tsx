@@ -88,7 +88,8 @@ export default function Home() {
           className="animate-fade-up flex w-full min-w-0 items-center gap-4 rounded-full bg-emerald-600 px-5 py-4 text-white shadow-md touch-manipulation"
           style={{ animationDelay: "320ms" }}
         >
-          <span aria-hidden="true" className="text-3xl">💬</span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/Transparent.png" alt="" className="h-10 w-10 shrink-0 object-contain drop-shadow-md brightness-0 invert" />
           <div className="flex-1 min-w-0 text-left">
             <h2 className={`font-extrabold text-lg leading-tight ${ur ? "font-urdu" : ""}`} dir="auto">
               {t("home_chat")}

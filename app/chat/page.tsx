@@ -488,8 +488,10 @@ export default function ChatPage() {
         >
           <span aria-hidden="true">{dir === "rtl" ? "❯" : "❮"}</span>
         </Link>
-        <h1 className={`flex-1 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
-          💬 {t("home_chat")}
+        <h1 className={`flex flex-1 items-center gap-2 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/Transparent.png" alt="" className="h-7 w-7 object-contain" />
+          {t("home_chat")}
         </h1>
         <LanguageToggle />
       </header>
