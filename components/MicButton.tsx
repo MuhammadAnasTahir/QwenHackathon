@@ -53,13 +53,14 @@ export function MicButton({ onResult, onInterim, disabled }: MicButtonProps) {
       disabled={isDisabled}
       aria-label={listening ? t("chat_listening") : t("chat_tap_mic")}
       aria-pressed={listening}
-      className={`relative flex h-20 w-20 shrink-0 select-none items-center justify-center rounded-full text-3xl shadow-lg transition-colors ${
+      className={`relative flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-full text-3xl transition-colors touch-manipulation ${
         listening
-          ? "animate-pulse bg-red-500 text-white ring-4 ring-red-300"
-          : "bg-emerald-600 text-white active:bg-emerald-700"
+          ? "animate-pulse bg-red-500 ring-4 ring-red-300"
+          : "bg-transparent border border-emerald-200 active:bg-stone-100"
       } ${isDisabled ? "cursor-not-allowed opacity-40" : ""}`}
     >
-      <span aria-hidden="true">🎤</span>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/mic.avif" alt="" className="h-10 w-10 object-contain mix-blend-multiply" />
       {listening ? (
         <span
           aria-hidden="true"

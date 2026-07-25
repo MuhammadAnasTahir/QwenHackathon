@@ -50,13 +50,20 @@ export function SpeakButton({ text, lang, className }: SpeakButtonProps) {
       onClick={() => void toggle()}
       aria-label={t("speak_screen")}
       aria-pressed={speaking}
-      className={`flex select-none items-center justify-center rounded-full shadow-sm transition-colors ${
+      className={`flex select-none items-center justify-center rounded-full transition-colors ${
         speaking
-          ? "animate-pulse bg-emerald-600 text-white"
-          : "bg-emerald-100 text-emerald-700 active:bg-emerald-200"
+          ? "animate-pulse bg-emerald-600 text-white shadow-sm"
+          : "bg-transparent border border-emerald-200 active:bg-stone-100"
       } ${className ?? "h-16 w-16 text-2xl"}`}
     >
-      <span aria-hidden="true">{speaking ? "⏹" : "🔊"}</span>
+      {speaking ? (
+        <span aria-hidden="true">⏹</span>
+      ) : (
+        <span aria-hidden="true" className="flex h-full w-full items-center justify-center p-1">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/sound.avif" alt="" className="h-full w-full object-cover rounded-full" />
+        </span>
+      )}
     </button>
   );
 }

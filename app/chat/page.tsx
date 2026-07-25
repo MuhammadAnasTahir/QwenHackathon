@@ -298,28 +298,17 @@ export default function ChatPage() {
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col">
       {/* Header */}
-      <header className="flex items-center gap-2 border-b border-stone-200 bg-white/90 px-3 py-2 backdrop-blur">
+      <header className="flex items-center gap-2 border-b border-stone-200 bg-white/90 px-2 py-1 backdrop-blur">
         <Link
           href="/"
           aria-label={ur ? "واپس" : "Back"}
-          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-3xl text-stone-600 active:bg-stone-100"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-2xl text-stone-600 active:bg-stone-100"
         >
-          <span aria-hidden="true">{dir === "rtl" ? "→" : "←"}</span>
+          <span aria-hidden="true">{dir === "rtl" ? "❯" : "❮"}</span>
         </Link>
         <h1 className={`flex-1 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
           💬 {t("home_chat")}
         </h1>
-        <button
-          type="button"
-          onClick={toggleMute}
-          aria-pressed={muted}
-          aria-label={muted ? "unmute" : "mute"}
-          className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-2xl transition-colors ${
-            muted ? "bg-stone-200 text-stone-500" : "bg-emerald-100 text-emerald-700"
-          }`}
-        >
-          <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
-        </button>
         <LanguageToggle />
       </header>
 
@@ -328,15 +317,13 @@ export default function ChatPage() {
       {/* Transcript */}
       <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <div className="mt-10 flex flex-col items-center gap-3 text-center">
-            <span aria-hidden="true" className="text-6xl">
-              📸
-            </span>
-            <p className={`max-w-xs text-xl text-stone-600 ${urduFont}`} dir="auto">
-              {t("home_hint")}
-            </p>
-            <p className={`text-base text-stone-400 ${urduFont}`} dir="auto">
-              {t("chat_tap_mic")}
+          <div className="flex h-full flex-col items-center justify-center gap-5 pb-10 text-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/Transparent.png" alt="" className="h-32 w-32 object-contain drop-shadow-md" />
+            <p className={`max-w-xs text-xl font-semibold text-stone-700 ${urduFont}`} dir="auto">
+              {ur
+                ? "آپ کیا جاننا چاہیں گے؟"
+                : "What would you like to know?"}
             </p>
           </div>
         ) : null}
@@ -386,7 +373,7 @@ export default function ChatPage() {
       </main>
 
       {/* Composer */}
-      <footer className="border-t border-stone-200 bg-white px-3 pb-3 pt-2">
+      <footer className="border-t border-stone-200 bg-white px-2 pb-2 pt-1">
         {/* Attached photo preview */}
         {attachment ? (
           <div className="mb-2 flex items-center gap-3">
@@ -439,7 +426,7 @@ export default function ChatPage() {
         ) : null}
 
         <form
-          className="flex items-center gap-2"
+          className="flex items-center gap-1"
           onSubmit={(e) => {
             e.preventDefault();
             void sendChat(input);
@@ -450,9 +437,10 @@ export default function ChatPage() {
             onClick={() => setShowPicker(true)}
             disabled={attachBusy}
             aria-label={t("chat_attach")}
-            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-3xl text-emerald-700 transition-colors active:bg-emerald-100 disabled:opacity-40"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-transparent transition-colors active:bg-stone-100 disabled:opacity-40"
           >
-            <span aria-hidden="true">📷</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/attachment.jpg" alt="" className="h-10 w-10 object-contain mix-blend-multiply" />
           </button>
 
           <input
@@ -460,12 +448,12 @@ export default function ChatPage() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={t("chat_placeholder")}
+            placeholder={ur ? "چیٹ" : "Chat"}
             dir="auto"
             autoFocus
             enterKeyHint="send"
             autoComplete="off"
-            className={`h-16 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
+            className={`h-12 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-base text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
           />
 
           <MicButton
@@ -481,7 +469,7 @@ export default function ChatPage() {
             type="submit"
             disabled={busy || (!input.trim() && !attachment)}
             aria-label={t("chat_send")}
-            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-2xl text-white shadow-md transition-colors active:bg-emerald-700 disabled:opacity-40"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-xl text-white shadow-md transition-colors active:bg-emerald-700 disabled:opacity-40"
           >
             <span aria-hidden="true" className={dir === "rtl" ? "-scale-x-100" : ""}>
               ➤

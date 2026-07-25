@@ -6,7 +6,7 @@ export function LanguageToggle({ className }: { className?: string }) {
   const { lang, setLang, t } = useLang();
 
   const seg = (active: boolean) =>
-    `flex min-h-12 min-w-20 items-center justify-center rounded-full px-4 py-2 text-lg transition-colors ${
+    `flex min-h-8 min-w-16 items-center justify-center rounded-full px-3 py-1 text-sm transition-colors ${
       active
         ? "bg-white font-bold text-emerald-700 shadow"
         : "text-stone-600 active:bg-stone-300/60"
@@ -17,7 +17,7 @@ export function LanguageToggle({ className }: { className?: string }) {
       role="group"
       aria-label={t("language_toggle")}
       dir="ltr"
-      className={`inline-flex select-none items-center rounded-full bg-stone-200 p-1 ${className ?? ""}`}
+      className={`inline-flex shrink-0 select-none items-center rounded-full bg-stone-200 p-1 ${className ?? ""}`}
     >
       <button
         type="button"
