@@ -21,12 +21,12 @@ self.addEventListener("notificationclick", (event) => {
         for (const client of clientList) {
           if ("focus" in client) {
             if ("navigate" in client) {
-              client.navigate("/alarms").catch(() => {});
+              client.navigate("/").catch(() => {});
             }
             return client.focus();
           }
         }
-        return self.clients.openWindow("/alarms");
+        return self.clients.openWindow("/");
       })
   );
 });

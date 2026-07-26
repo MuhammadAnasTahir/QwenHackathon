@@ -97,13 +97,18 @@ export function VoiceRecordButton({ onRecorded, disabled }: VoiceRecordButtonPro
         disabled={disabled}
         aria-label={recording ? "Stop recording" : "Record a voice message"}
         aria-pressed={recording}
-        className={`relative flex h-16 w-16 shrink-0 select-none items-center justify-center rounded-2xl text-3xl shadow-md transition-colors ${
+        className={`relative flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-full text-3xl transition-colors touch-manipulation ${
           recording
-            ? "animate-pulse bg-red-500 text-white ring-4 ring-red-300"
-            : "bg-emerald-100 text-emerald-700 active:bg-emerald-200"
+            ? "animate-pulse bg-red-500 ring-4 ring-red-300"
+            : "bg-transparent border border-emerald-200 active:bg-stone-100"
         } ${disabled ? "cursor-not-allowed opacity-40" : ""}`}
       >
-        <span aria-hidden="true">{recording ? "⏹️" : "🎤"}</span>
+        {recording ? (
+          <span aria-hidden="true" className="text-white">⏹️</span>
+        ) : (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src="/mic.avif" alt="" className="h-10 w-10 object-contain mix-blend-multiply" />
+        )}
       </button>
 
       {recording ? (

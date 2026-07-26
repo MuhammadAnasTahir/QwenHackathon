@@ -1,13 +1,26 @@
-# صحت ساتھی — Sehat Saathi
+<p align="center">
+  <img src="Logos/Logo.png" alt="Sehat Saathi logo" width="150" />
+</p>
 
-**An Urdu-first medical assistant for the 40% of Pakistani adults who cannot read the prescription they are handed.**
+<h1 align="center">صحت ساتھی — Sehat Saathi</h1>
+
+<p align="center"><strong>An Urdu-first medical assistant for the 40% of Pakistani adults who cannot read the prescription they are handed.</strong></p>
 
 Photograph a handwritten prescription → hear it explained in spoken Urdu → get medicine alarms that ring with a **photo of the actual box** and an **Urdu voice announcement**. Powered end-to-end by **Qwen 3.7 Plus + Qwen 3.7 Max**.
 
 > Built for the **Qwen AI Buildathon 2026**.
 
-- **Live demo:** _link goes here after Vercel deploy_
-- **Demo video:** _link goes here_
+### ▶️ Try it live — scan or click
+
+<p align="center">
+  <a href="https://qwenhackathon-production.up.railway.app/">
+    <img src="Logos/QR.png" alt="Scan to open Sehat Saathi" width="220" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://qwenhackathon-production.up.railway.app/"><strong>qwenhackathon-production.up.railway.app</strong></a>
+</p>
 
 ---
 
@@ -21,24 +34,24 @@ Every existing medicine-reminder app assumes you can **read**, **type**, and **u
 
 ## What it does
 
-A responsive web app (installable PWA — no app store). The home screen has exactly two big buttons:
+A responsive web app (installable PWA — no app store). The home screen puts everything one tap away: a big **Chat** button, and a **Medicine Alarms** panel where you add reminders manually or straight from a prescription photo, with your saved alarms listed below.
 
-| ⏰ الارم — Alarms | 💬 بات کریں — Chat |
+| 💬 بات کریں — Chat | ⏰ الارم — Medicine Alarms |
 |---|---|
-| Medicine reminders that ring full-screen with a **photo of the medicine box** and an **Urdu voice announcement** | Photograph a prescription / medicine box, or speak a question in Urdu → answer in simple **spoken** Urdu |
+| Photograph a prescription / medicine box, or **speak** a question in Urdu → answer in simple **spoken** Urdu | Reminders that ring full-screen with a **photo of the medicine** and an **Urdu voice announcement** |
 
 The killer flow that connects them:
 
-**📸 Photograph prescription → Qwen extracts every medicine + schedule as strict JSON → safety check → all alarms auto-created → user confirms by voice.**
+**📸 Photograph a prescription → Qwen extracts every medicine + schedule as strict JSON → safety check → the app offers to add them → you confirm → alarms are created.**
 
 ### Feature list
 
 - **Prescription → structured JSON** — Qwen 3.7 Plus reads handwritten Urdu (Nastaliq) directions and mixed Latin notation (`1 BD`, `TDS`, `HS`, `1-0-1`, Eastern Arabic numerals ۱۲۳) against a closed vocabulary, returning strict JSON.
 - **Self-consistency voting** — the same image is extracted 3× at low temperature and majority-voted per field; disagreement automatically marks a field low-confidence.
 - **Medical grounding & safety pass** — Qwen 3.7 Max checks the extracted schedule against typical dosing for each drug, and scans the full medicine list for **duplicate active ingredients** (Panadol + a paracetamol combination) and dangerous interactions.
-- **Auto-created alarms** — extracted schedules become alarms after a spoken read-back and confirmation. Every alarm shows the photo of the actual box; the ring screen speaks the dose in Urdu.
+- **Gated alarm creation** — after a prescription is read, the app asks *"add these to your alarms?"* and only creates them on confirmation — never silently. Every alarm's ring screen speaks the dose in Urdu.
 - **"Is this the right medicine?"** — point the camera at the box from the pharmacy; Plus compares it to the prescription list and reads the expiry date, warning if expired.
-- **Voice in / voice out** — Web Speech API (`ur-PK`) speech-to-text and text-to-speech; every screen has a speaker button. Nobody has to type.
+- **Voice message in → voice message out** — record a spoken question and get a spoken Urdu answer back. Uses the browser Web Speech API; on devices with no native Urdu voice (most laptops) the answer is spoken as Roman Urdu so it is always audible. Nobody has to type.
 - **Urdu-first UI** — RTL layout, Noto Nastaliq Urdu, time-of-day icons instead of clock text, ≥64px touch targets, English toggle.
 - **Safety layer** — persistent "this is not a doctor" disclaimer, red-flag escalation to hospital / **Rescue 1122**, and a hard rule to never guess an unreadable dose — the app asks the patient instead.
 - **Judge Mode panel** — a drawer showing the live pipeline trace (which model ran, what it did, how long it took) and the raw extraction JSON.
@@ -91,7 +104,7 @@ The Plus → Max **cross-field grounding** step is the part a dedicated OCR engi
 | **Technical implementation** | 20 | Measured per-field accuracy on a real-prescription eval set (`eval/`). Self-consistency voting. Client-side image preprocessing. Clean PWA + service worker. |
 | **Real-world impact** | 15 | ~40% of Pakistani adults; a concrete, documented, locally grounded problem (Rescue 1122, Urdu enums, local brand names). |
 | **UX & product quality** | 10 | Zero-reading, zero-typing interface. Urdu-first, RTL, Nastaliq, giant touch targets. |
-| **Demo & presentation** | 10 | Live extraction of a real prescription, live Plus→Max handoff, "test alarm in 10 seconds" button. |
+| **Demo & presentation** | 10 | Live extraction of a real prescription, the live Plus→Max handoff shown in Judge Mode, and a gated add-to-alarms confirmation. |
 
 ## Setup
 
@@ -106,15 +119,15 @@ npm run build                  # production build
 
 ### Environment variables
 
-| Variable | Required | Default | Purpose |
+| Variable | Required | Value / example | Purpose |
 |---|---|---|---|
-| `DASHSCOPE_API_KEY` | **yes** | — | Alibaba Cloud Model Studio key. Server-side only — never `NEXT_PUBLIC_`. |
-| `DASHSCOPE_BASE_URL` | no | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | OpenAI-compatible endpoint |
-| `QWEN_VISION_MODEL` | no | `qwen3.7-plus` | Vision + chat model |
-| `QWEN_REASONING_MODEL` | no | `qwen3.7-max` | Text-only safety/grounding model |
+| `DASHSCOPE_API_KEY` | **yes** | your ModelScope token | Model access key. Server-side only — never `NEXT_PUBLIC_`. |
+| `DASHSCOPE_BASE_URL` | **yes** | `https://api-inference.modelscope.ai/v1` | OpenAI-compatible endpoint |
+| `QWEN_VISION_MODEL` | **yes** | `Qwen-Ambassador/Qwen3.7-Plus` | Vision + chat model |
+| `QWEN_REASONING_MODEL` | **yes** | `Qwen-Ambassador/Qwen3.7-Max` | Text-only safety/grounding model |
 | `EVAL_URL` | no | `http://localhost:3000/api/extract` | Target for the eval harness |
 
-The API key never touches the client — every model call goes through a Next.js API route.
+See [`.env.example`](.env.example) for the full template. The API key never touches the client — every model call goes through a Next.js API route.
 
 ## Eval harness
 
@@ -130,13 +143,9 @@ Full instructions: [`eval/README.md`](eval/README.md).
 
 ## Deploy
 
-One-command deploy to **Vercel** (HTTPS is required for the microphone and service worker):
+Deployed on **Railway** at **https://qwenhackathon-production.up.railway.app/** (HTTPS is required for the microphone and service worker). Railway runs `npm run build` then `npm start`; set the environment variables from the table above in the Railway project settings.
 
-```bash
-npx vercel
-```
-
-Set `DASHSCOPE_API_KEY` (and any overrides) in the Vercel project's environment variables. Alarms are client-side (Tier 1: foreground timer + full-screen ring; Tier 2: service-worker notification). Server-side Web Push is the named production roadmap — there is no reliable purely-client scheduled-notification API on the web, and we say so honestly.
+Alarms are client-side (Tier 1: foreground timer + full-screen ring; Tier 2: service-worker notification). Server-side Web Push is the named production roadmap — there is no reliable purely-client scheduled-notification API on the web, and we say so honestly.
 
 ## Team
 

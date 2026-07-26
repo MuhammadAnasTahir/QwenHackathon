@@ -5,24 +5,19 @@ import { useEffect, useRef, useState } from "react";
 import {
   EVT_TRACE,
   SS_CHAT,
-  type Alarm,
   type ChatApiRequest,
   type ChatApiResponse,
   type ExtractApiResponse,
   type PipelineTrace,
-  type VerifyApiRequest,
-  type VerifyResult,
 } from "@/lib/schema";
 import { useLang } from "@/lib/i18n";
+import { buildAlarmsFromExtraction, saveAlarm } from "@/lib/alarms";
 import { hasUrduCapableVoice, initAudio, speak, stopSpeaking } from "@/lib/speech";
-import { loadAlarms, saveAlarm } from "@/lib/alarms";
 import { fileToDataUrl, pdfFirstPageToDataUrl, preprocess, thumbnail } from "@/lib/image";
 import { streamJson } from "@/lib/streamClient";
 import { CaptureOrUpload } from "@/components/CaptureOrUpload";
 import { ChatMessage } from "@/components/ChatMessage";
-import { ExtractReview } from "@/components/ExtractReview";
 import { LanguageToggle } from "@/components/LanguageToggle";
-import { ProgressTimeline, type ProgressStage } from "@/components/ProgressTimeline";
 import RedFlagBanner from "@/components/RedFlagBanner";
 import { VoiceMessage } from "@/components/VoiceMessage";
 import { VoiceRecordButton } from "@/components/VoiceRecordButton";
@@ -40,15 +35,18 @@ interface ChatMsg {
    * the reply should be spoken aloud. */
   viaVoice?: boolean;
 }
-interface ExtractMsg {
-  id: string;
-  kind: "extract";
-  data: ExtractApiResponse;
-  photo: string | null;
-}
 interface AlarmsLinkMsg {
   id: string;
   kind: "alarms_link";
+}
+/** A "do you want to add these to your alarms?" prompt card. Alarms are only
+ * created when the user taps Yes — never automatically. */
+interface AlarmOfferMsg {
+  id: string;
+  kind: "alarm_offer";
+  image: string; // full data URL to run extraction on
+  status: "pending" | "adding" | "done" | "empty";
+  count?: number;
 }
 interface VoiceMsg {
   id: string;
@@ -59,7 +57,7 @@ interface VoiceMsg {
   durationMs?: number;
   autoPlay?: boolean;
 }
-type Msg = ChatMsg | ExtractMsg | AlarmsLinkMsg | VoiceMsg;
+type Msg = ChatMsg | AlarmsLinkMsg | AlarmOfferMsg | VoiceMsg;
 
 interface Attachment {
   full: string; // preprocessed image sent to the API + stored with alarms
@@ -121,6 +119,18 @@ function isPureGreeting(text: string): boolean {
   return false;
 }
 
+/** Does the user want to add medicines to their alarms? (English / Roman /
+ * Urdu). Used to offer the gated "add to alarms" card from a typed request. */
+function isAddAlarmIntent(text: string): boolean {
+  if (/الارم|یاد ?دہانی|شیڈول|ریمائنڈر/.test(text)) return true;
+  const c = text.toLowerCase();
+  const hasNoun = /\b(alarm|alarms|reminder|reminders|schedule)\b/.test(c);
+  const hasVerb = /\b(add|set|create|make|put|save|register)\b/.test(c);
+  if (hasNoun && hasVerb) return true;
+  if (hasNoun && /\b(my|the|these|to)\b/.test(c)) return true;
+  return false;
+}
+
 /** Tell the DevPanel what just happened (trace steps + raw payload). */
 function dispatchTrace(trace: PipelineTrace, payload?: unknown): void {
   if (typeof window === "undefined") return;
@@ -138,7 +148,6 @@ export default function ChatPage() {
   const [attachBusy, setAttachBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [extractStage, setExtractStage] = useState<ProgressStage | null>(null);
   const [redFlag, setRedFlag] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -147,6 +156,10 @@ export default function ChatPage() {
   // Windows laptop: usually no). Determined once on mount. When false, Urdu
   // voice replies are requested in Roman Urdu and spoken with an English voice.
   const urduVoiceRef = useRef<boolean>(true);
+
+  // The most recent prescription image sent in this chat — lets a typed
+  // "add to my alarms" request extract from it without re-uploading.
+  const lastRxImageRef = useRef<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -199,7 +212,8 @@ export default function ChatPage() {
           "kind" in m &&
           ((m as Msg).kind === "chat" ||
             (m as Msg).kind === "alarms_link" ||
-            (m as Msg).kind === "voice"),
+            (m as Msg).kind === "voice" ||
+            (m as Msg).kind === "alarm_offer"),
       );
       if (restored.length > 0) setMessages(restored);
     } catch {
@@ -213,7 +227,16 @@ export default function ChatPage() {
     if (typeof window === "undefined") return;
     try {
       const serializable = messages
-        .filter((m) => m.kind === "chat" || m.kind === "alarms_link" || m.kind === "voice")
+        .filter(
+          (m) =>
+            m.kind === "chat" ||
+            m.kind === "alarms_link" ||
+            m.kind === "voice" ||
+            // Keep only RESOLVED offer cards (the "Yes → added" result). A
+            // still-pending offer isn't persisted — its Yes button needs the
+            // image, which we strip, so restoring a pending one would break it.
+            (m.kind === "alarm_offer" && (m.status === "done" || m.status === "empty")),
+        )
         .map((m) => {
           if (m.kind === "chat") {
             // Drop the image data URL — too big for sessionStorage quota.
@@ -223,6 +246,10 @@ export default function ChatPage() {
             // Blob object URLs don't survive navigation, and autoPlay must not
             // re-fire on restore — strip both. `text` stays for history context.
             return { ...m, audioUrl: null, autoPlay: false };
+          }
+          if (m.kind === "alarm_offer") {
+            // Strip the heavy image data URL; the resolved card doesn't need it.
+            return { ...m, image: "" };
           }
           return m;
         });
@@ -240,6 +267,62 @@ export default function ChatPage() {
         m.kind === "chat" && m.id === id ? { ...m, text: m.text + chunk } : m,
       ),
     );
+  const updateOffer = (id: string, patch: Partial<AlarmOfferMsg>) =>
+    setMessages((prev) =>
+      prev.map((m) => (m.kind === "alarm_offer" && m.id === id ? { ...m, ...patch } : m)),
+    );
+
+  /** User tapped "Yes" on an alarm-offer card: extract the prescription and
+   * create alarms. This is the ONLY path that creates alarms from chat. */
+  const confirmAddAlarms = async (offerId: string, image: string) => {
+    if (busy) return;
+    updateOffer(offerId, { status: "adding" });
+    setBusy(true);
+    const holder: { value: ExtractApiResponse | null; failed: boolean } = {
+      value: null,
+      failed: false,
+    };
+    await streamJson(
+      "/api/extract",
+      { image },
+      {
+        onDone: (payload) => {
+          holder.value = payload as unknown as ExtractApiResponse;
+        },
+        onError: () => {
+          holder.failed = true;
+        },
+      },
+    );
+    setBusy(false);
+
+    if (holder.failed || !holder.value) {
+      updateOffer(offerId, { status: "pending" });
+      appendError(false);
+      return;
+    }
+    const res = holder.value;
+    dispatchTrace(res.trace, res);
+    if (res.result.medicines.length === 0) {
+      updateOffer(offerId, { status: "empty" });
+      return;
+    }
+    try {
+      const alarms = await buildAlarmsFromExtraction(res.result, image);
+      for (const a of alarms) saveAlarm(a);
+      updateOffer(offerId, { status: "done", count: alarms.length });
+      const text = ur
+        ? `${alarms.length > 1 ? `${alarms.length} دواؤں کے` : "دوا کے"} الارم بن گئے ہیں۔ وقت پر گھنٹی بجے گی۔`
+        : `${alarms.length > 1 ? `Alarms for ${alarms.length} medicines are set.` : "Your medicine alarm is set."} It will ring on time.`;
+      append(
+        { id: nextId(), kind: "chat", role: "assistant", text },
+        { id: nextId(), kind: "alarms_link" },
+      );
+    } catch {
+      updateOffer(offerId, { status: "pending" });
+      appendError(false);
+    }
+  };
 
   /**
    * Speak the assistant's reply — but only when the user asked by voice.
@@ -321,7 +404,11 @@ export default function ChatPage() {
     initAudio();
     cancelSpeaking();
 
-    const content = text || (ur ? "یہ تصویر دیکھیں" : "Please look at this photo");
+    // Image with no typed instruction: send a neutral marker so the model
+    // (guided by CHAT_SYSTEM) identifies the document and asks what to do,
+    // instead of dumping a full analysis.
+    const content =
+      text || (ur ? "میں نے یہ دستاویز بھیجی ہے۔" : "I've attached this document.");
     const userMsg: ChatMsg = {
       id: nextId(),
       kind: "chat",
@@ -348,6 +435,28 @@ export default function ChatPage() {
       if (viaVoice) {
         if (useRoman) sayReply(GREETING_INTRO.roman, true, "en");
         else sayReply(shown, true, lang);
+      }
+      return;
+    }
+
+    // "Add to my alarms" typed request — the app creates alarms, not the model.
+    // If a prescription was sent earlier, offer to add from it; otherwise ask
+    // for a photo.
+    if (!img && isAddAlarmIntent(text)) {
+      setInput("");
+      if (lastRxImageRef.current) {
+        append(userMsg, {
+          id: nextId(),
+          kind: "alarm_offer",
+          image: lastRxImageRef.current,
+          status: "pending",
+        });
+      } else {
+        const msg = ur
+          ? "الارم بنانے کے لیے پہلے اپنے نسخے کی تصویر بھیجیں۔ پھر میں دوائیں پڑھ کر الارم بنا دوں گا۔"
+          : "To create alarms, please send a photo of your prescription first. Then I can read the medicines and set the alarms.";
+        append(userMsg, { id: nextId(), kind: "chat", role: "assistant", text: msg });
+        if (viaVoice) sayReply(msg, true, replySpeakLang);
       }
       return;
     }
@@ -405,6 +514,13 @@ export default function ChatPage() {
     // Only speak the reply when the user asked by voice. On no-Urdu-voice
     // devices the reply is Roman Urdu, spoken with the English voice.
     sayReply(done.reply, viaVoice, replySpeakLang);
+
+    // If a prescription image was sent, remember it and offer to add alarms —
+    // gated behind the user's Yes, never automatic. Skip for red-flag turns.
+    if (img && !done.red_flag) {
+      lastRxImageRef.current = img.full;
+      append({ id: nextId(), kind: "alarm_offer", image: img.full, status: "pending" });
+    }
   };
 
   // ── Voice message: voice in → voice out (no visible text) ─────────────────
@@ -483,140 +599,25 @@ export default function ChatPage() {
     });
   };
 
-  // ── Action chip: read the prescription (streaming with staged timeline) ──
-
-  const doExtract = async () => {
-    const img = attachment;
-    if (busy || !img) return;
-    initAudio();
-    cancelSpeaking();
-    append({ id: nextId(), kind: "chat", role: "user", text: t("action_read_rx"), image: img.thumb });
-    setAttachment(null);
-    setBusy(true);
-    setBusyLabel(null); // The timeline replaces the single-line label for extract.
-    setExtractStage("prep");
-
-    const extractHolder: { value: ExtractApiResponse | null; failed: boolean } = {
-      value: null,
-      failed: false,
-    };
-
-    await streamJson(
-      "/api/extract",
-      { image: img.full },
-      {
-        onProgress: (stage) => setExtractStage(stage as ProgressStage),
-        onDone: (payload) => {
-          extractHolder.value = payload as unknown as ExtractApiResponse;
-        },
-        onError: () => {
-          extractHolder.failed = true;
-        },
-      },
-    );
-
-    setBusy(false);
-    setExtractStage(null);
-
-    if (extractHolder.failed || !extractHolder.value) {
-      appendError(false);
-      return;
-    }
-    const done = extractHolder.value;
-    dispatchTrace(done.trace, done);
-    if (done.result.medicines.length === 0) {
-      const text = ur
-        ? "تصویر سے کوئی دوا نہیں پڑھی جا سکی۔ برائے مہربانی صاف تصویر لیں۔"
-        : "Could not read any medicines from the image. Please try a clearer photo.";
-      append({ id: nextId(), kind: "chat", role: "assistant", text });
-      return;
-    }
-    append({ id: nextId(), kind: "extract", data: done, photo: img.full });
-  };
-
-  // ── Action chip: verify a medicine box ─────────────────────────────────────
-
-  const doVerify = async () => {
-    const img = attachment;
-    if (busy || !img) return;
-    initAudio();
-    cancelSpeaking();
-    append({ id: nextId(), kind: "chat", role: "user", text: t("action_check_box"), image: img.thumb });
-    setAttachment(null);
-    setBusy(true);
-    try {
-      const body: VerifyApiRequest = {
-        image: img.full,
-        medicines: loadAlarms().map((a) => ({ brand_name: a.medicine_name, salt: a.salt })),
-      };
-      const res = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`verify ${res.status}`);
-      const data = (await res.json()) as VerifyResult & { trace: PipelineTrace };
-      dispatchTrace(data.trace, data);
-
-      const status =
-        data.match === true
-          ? `✅ ${t("verify_match")}`
-          : data.match === false
-            ? `❌ ${t("verify_mismatch")}`
-            : `❓ ${t("verify_unsure")}`;
-      const lines = [status, ur ? data.explanation_ur : data.explanation_en];
-      if (data.expired) lines.push(`⛔ ${t("expired_warning")}`);
-      else if (data.expiry_date) {
-        lines.push(ur ? `میعاد: ${data.expiry_date}` : `Expiry: ${data.expiry_date}`);
-      }
-      const text = lines.filter(Boolean).join("\n");
-      append({ id: nextId(), kind: "chat", role: "assistant", text });
-    } catch {
-      appendError(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // ── ExtractReview outcomes ─────────────────────────────────────────────────
-
-  const onConfirmed = (reviewMsgId: string) => (alarms: Alarm[]) => {
-    for (const a of alarms) saveAlarm(a);
-    removeMsg(reviewMsgId);
-    const text = ur
-      ? `بہت خوب! ${alarms.length > 1 ? `${alarms.length} دواؤں کے` : "دوا کے"} الارم بن گئے ہیں۔ وقت پر گھنٹی بجے گی اور دوا کی تصویر نظر آئے گی۔`
-      : `Done! ${alarms.length > 1 ? `Alarms for ${alarms.length} medicines are set.` : "Your medicine alarm is set."} It will ring on time and show the medicine photo.`;
-    append(
-      { id: nextId(), kind: "chat", role: "assistant", text },
-      { id: nextId(), kind: "alarms_link" }
-    );
-  };
-
-  const onRetake = (reviewMsgId: string) => () => {
-    removeMsg(reviewMsgId);
-    setShowPicker(true);
-  };
-
   // ── UI bits ────────────────────────────────────────────────────────────────
 
-  const showChips = attachment !== null && input.trim() === "" && !busy;
   const urduFont = ur ? "font-urdu leading-loose" : "";
-  const chipCls =
-    "flex min-h-14 items-center gap-2 rounded-full border-2 border-emerald-200 bg-white px-5 text-lg font-bold text-emerald-800 shadow-sm transition-transform active:scale-95";
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col">
       {/* Header */}
-      <header className="flex items-center gap-2 border-b border-stone-200 bg-white/90 px-3 py-2 backdrop-blur">
+      <header className="flex items-center gap-2 border-b border-stone-200 bg-white/90 px-2 py-1 backdrop-blur">
         <Link
           href="/"
           aria-label={ur ? "واپس" : "Back"}
-          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-3xl text-stone-600 active:bg-stone-100"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-2xl text-stone-600 active:bg-stone-100"
         >
-          <span aria-hidden="true">{dir === "rtl" ? "→" : "←"}</span>
+          <span aria-hidden="true">{dir === "rtl" ? "❯" : "❮"}</span>
         </Link>
-        <h1 className={`flex-1 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
-          💬 {t("home_chat")}
+        <h1 className={`flex flex-1 items-center gap-2 truncate text-2xl font-extrabold text-stone-900 ${urduFont}`} dir="auto">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/Transparent.png" alt="" className="h-7 w-7 object-contain" />
+          {t("home_chat")}
         </h1>
         <LanguageToggle />
       </header>
@@ -626,15 +627,13 @@ export default function ChatPage() {
       {/* Transcript */}
       <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <div className="mt-10 flex flex-col items-center gap-3 text-center">
-            <span aria-hidden="true" className="text-6xl">
-              📸
-            </span>
-            <p className={`max-w-xs text-xl text-stone-600 ${urduFont}`} dir="auto">
-              {t("home_hint")}
-            </p>
-            <p className={`text-base text-stone-400 ${urduFont}`} dir="auto">
-              {t("chat_tap_mic")}
+          <div className="flex h-full flex-col items-center justify-center gap-5 pb-10 text-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/Transparent.png" alt="" className="h-32 w-32 object-contain drop-shadow-md" />
+            <p className={`max-w-xs text-xl font-semibold text-stone-700 ${urduFont}`} dir="auto">
+              {ur
+                ? "آپ کیا جاننا چاہیں گے؟"
+                : "What would you like to know?"}
             </p>
           </div>
         ) : null}
@@ -664,45 +663,97 @@ export default function ChatPage() {
               />
             );
           }
-          if (m.kind === "extract") {
+          if (m.kind === "alarm_offer") {
+            const offer = m;
             return (
-              <ExtractReview
+              <div
                 key={m.id}
-                data={m.data}
-                photo={m.photo}
-                onConfirmed={onConfirmed(m.id)}
-                onRetake={onRetake(m.id)}
-              />
+                className="flex justify-start"
+              >
+                <div className="w-full max-w-[90%] rounded-2xl rounded-ss-md border-2 border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
+                  {offer.status === "pending" ? (
+                    <>
+                      <p
+                        className={`mb-3 text-lg font-bold text-emerald-900 ${urduFont}`}
+                        dir="auto"
+                      >
+                        ⏰ {ur
+                          ? "کیا میں ان دواؤں کے الارم بنا دوں؟"
+                          : "Do you want me to add these medicines to your alarms?"}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void confirmAddAlarms(offer.id, offer.image)}
+                          className={`flex min-h-14 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-lg font-extrabold text-white shadow-md active:bg-emerald-700 disabled:opacity-40 ${urduFont}`}
+                        >
+                          ✅ {ur ? "ہاں، بنائیں" : "Yes, add"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => removeMsg(offer.id)}
+                          className={`flex min-h-14 items-center justify-center gap-2 rounded-2xl border-2 border-stone-300 bg-white text-lg font-extrabold text-stone-700 active:bg-stone-50 disabled:opacity-40 ${urduFont}`}
+                        >
+                          {ur ? "نہیں" : "No"}
+                        </button>
+                      </div>
+                    </>
+                  ) : offer.status === "adding" ? (
+                    <div className="flex items-center gap-3">
+                      <span className="flex gap-1" aria-hidden="true">
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:0ms]" />
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:150ms]" />
+                        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-emerald-500 [animation-delay:300ms]" />
+                      </span>
+                      <span className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
+                        {ur ? "نسخہ پڑھ کر الارم بنائے جا رہے ہیں…" : "Reading the prescription and adding alarms…"}
+                      </span>
+                    </div>
+                  ) : offer.status === "done" ? (
+                    <div className="space-y-2">
+                      <p className={`text-base font-semibold text-emerald-900/80 ${urduFont}`} dir="auto">
+                        ⏰ {ur
+                          ? "کیا میں ان دواؤں کے الارم بنا دوں؟"
+                          : "Do you want me to add these medicines to your alarms?"}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full bg-emerald-600 px-3 py-1 text-sm font-extrabold text-white ${urduFont}`}>
+                          {ur ? "ہاں" : "Yes"}
+                        </span>
+                        <span className={`text-base font-bold text-emerald-800 ${urduFont}`} dir="auto">
+                          ✅ {ur
+                            ? `${offer.count ?? 0} الارم بن گئے`
+                            : `${offer.count ?? 0} alarm${(offer.count ?? 0) === 1 ? "" : "s"} added`}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className={`text-base font-bold text-stone-600 ${urduFont}`} dir="auto">
+                      {ur
+                        ? "اس تصویر میں کوئی دوا نہیں ملی۔ صاف تصویر بھیجیں۔"
+                        : "No medicines found in this image. Please try a clearer photo."}
+                    </p>
+                  )}
+                </div>
+              </div>
             );
           }
           return (
             <Link
               key={m.id}
-              href="/alarms"
+              href="/"
               className={`flex min-h-16 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-xl font-extrabold text-white shadow-md transition-transform active:scale-[0.98] ${urduFont}`}
             >
-              ⏰ {ur ? "الارم دیکھیں" : "See my alarms"}
+              {ur ? "الارم دیکھیں" : "See my alarms"}
             </Link>
           );
         })}
 
-        {/* Extract timeline — shown while /api/extract is running. Each row
-            transitions pending → running → done as SSE progress events land,
-            just like Claude's "reading / searching / responding" pill list. */}
-        {extractStage !== null ? (
-          <div className="flex justify-start">
-            <div className="w-full max-w-[85%] rounded-2xl rounded-ss-md border border-stone-100 bg-white p-3 shadow-sm">
-              <p className={`mb-2 text-sm font-bold text-stone-500 ${urduFont}`} dir="auto">
-                {ur ? "نسخہ پڑھا جا رہا ہے…" : "Reading your prescription…"}
-              </p>
-              <ProgressTimeline currentStage={extractStage} />
-            </div>
-          </div>
-        ) : null}
-
         {/* Chat-reply skeleton — only visible for the ~1s before the first
-            token lands. Never shown when the extract timeline is up. */}
-        {busy && busyLabel && extractStage === null ? (
+            token lands. */}
+        {busy && busyLabel ? (
           <div className="flex justify-start">
             <div className="flex items-center gap-3 rounded-2xl rounded-ss-md border border-stone-100 bg-white px-4 py-3 shadow-sm">
               <span className="flex gap-1" aria-hidden="true">
@@ -740,60 +791,42 @@ export default function ChatPage() {
       </main>
 
       {/* Composer */}
-      <footer className="border-t border-stone-200 bg-white px-3 pb-3 pt-2">
+      <footer className="border-t border-stone-200 bg-white px-2 pb-2 pt-1">
         {/* Attached photo preview */}
         {attachment ? (
-          <div className="mb-2 flex items-center gap-3">
-            <div className="relative">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={attachment.thumb}
-                alt=""
-                className="h-20 w-20 rounded-xl border-2 border-emerald-200 object-cover"
-              />
-              <button
-                type="button"
-                onClick={() => setAttachment(null)}
-                aria-label={t("cancel")}
-                className="absolute -top-2 -end-2 flex h-8 w-8 items-center justify-center rounded-full bg-stone-700 text-sm text-white shadow"
-              >
-                ✕
-              </button>
-            </div>
-            {showChips ? (
-              <p className={`flex-1 text-base text-stone-500 ${urduFont}`} dir="auto">
-                {ur ? "اب نیچے سے کام چنیں" : "Now pick an action below"}
+          <div className="mb-2 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={attachment.thumb}
+              alt=""
+              className="h-14 w-14 shrink-0 rounded-lg border border-emerald-200 object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <p className={`truncate text-base font-bold text-emerald-900 ${urduFont}`} dir="auto">
+                📎 {ur ? "دستاویز منسلک ہے" : "Document attached"}
               </p>
-            ) : null}
+              <p className={`truncate text-sm text-emerald-700/80 ${urduFont}`} dir="auto">
+                {ur ? "بھیجنے کے لیے تیر دبائیں" : "Press send to submit"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAttachment(null)}
+              aria-label={t("cancel")}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-700 text-sm text-white shadow"
+            >
+              ✕
+            </button>
           </div>
         ) : null}
         {attachBusy ? (
           <p className={`mb-2 animate-pulse text-base text-stone-500 ${urduFont}`} dir="auto">
-            ⏳ {ur ? "تصویر تیار ہو رہی ہے…" : "Preparing the photo…"}
+            ⏳ {ur ? "دستاویز تیار ہو رہی ہے…" : "Preparing the document…"}
           </p>
         ) : null}
 
-        {/* Action chips — shown when an image is attached and nothing typed yet */}
-        {showChips ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            <button type="button" onClick={() => void doExtract()} className={`${chipCls} ${urduFont}`}>
-              📋 {t("action_read_rx")}
-            </button>
-            <button type="button" onClick={() => void doVerify()} className={`${chipCls} ${urduFont}`}>
-              📦 {t("action_check_box")}
-            </button>
-            <button
-              type="button"
-              onClick={() => inputRef.current?.focus()}
-              className={`${chipCls} ${urduFont}`}
-            >
-              💬 {t("action_just_ask")}
-            </button>
-          </div>
-        ) : null}
-
         <form
-          className="flex items-center gap-2"
+          className="flex items-center gap-1"
           onSubmit={(e) => {
             e.preventDefault();
             void sendChat(input);
@@ -804,9 +837,10 @@ export default function ChatPage() {
             onClick={() => setShowPicker(true)}
             disabled={attachBusy}
             aria-label={t("chat_attach")}
-            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-3xl text-emerald-700 transition-colors active:bg-emerald-100 disabled:opacity-40"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-transparent transition-colors active:bg-stone-100 disabled:opacity-40"
           >
-            <span aria-hidden="true">📷</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/attachment.jpg" alt="" className="h-10 w-10 object-contain mix-blend-multiply" />
           </button>
 
           <input
@@ -814,12 +848,12 @@ export default function ChatPage() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={t("chat_placeholder")}
+            placeholder={ur ? "چیٹ" : "Chat"}
             dir="auto"
             autoFocus
             enterKeyHint="send"
             autoComplete="off"
-            className={`h-16 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
+            className={`h-12 min-w-0 flex-1 rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 text-base text-stone-900 placeholder:text-stone-400 focus:border-emerald-500 focus:outline-none ${urduFont}`}
           />
 
           <VoiceRecordButton
@@ -831,7 +865,7 @@ export default function ChatPage() {
             type="submit"
             disabled={busy || (!input.trim() && !attachment)}
             aria-label={t("chat_send")}
-            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-2xl text-white shadow-md transition-colors active:bg-emerald-700 disabled:opacity-40"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-xl text-white shadow-md transition-colors active:bg-emerald-700 disabled:opacity-40"
           >
             <span aria-hidden="true" className={dir === "rtl" ? "-scale-x-100" : ""}>
               ➤
@@ -840,11 +874,15 @@ export default function ChatPage() {
         </form>
       </footer>
 
-      {/* Shared capture-or-upload picker */}
+      {/* Shared capture-or-upload picker. Close it ourselves once a file is
+          picked (CaptureOrUpload no longer auto-closes on select). */}
       <CaptureOrUpload
         open={showPicker}
         onClose={() => setShowPicker(false)}
-        onFile={(f) => void onFile(f)}
+        onFile={(f) => {
+          setShowPicker(false);
+          void onFile(f);
+        }}
       />
     </div>
   );

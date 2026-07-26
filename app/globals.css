@@ -67,6 +67,27 @@ input[type="time"] {
   background: #a7f3d0; /* emerald-200 */
 }
 
+/* Thin, subtle scrollbars — the default desktop scrollbar looks heavy and
+   awkward next to the narrow mobile-first layout. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d6d3d1 transparent; /* stone-300 thumb, transparent track */
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6d3d1; /* stone-300 */
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a29e; /* stone-400 */
+}
+
 /* Gentle entrance used on the home screen */
 @keyframes fade-up {
   from {
